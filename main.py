@@ -1,23 +1,11 @@
-import psycopg2
-
-conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-cur = conn.cursor()
-
-cur.execute("SELECT version();")
-print(cur.fetchone())
-
-cur.close()
-conn.close()
-
 import os
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI()
 
-# Permetti a tutti di accedere (per semplicità)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,9 +22,23 @@ class ChatRequest(BaseModel):
     conversation_id: str = ""
     user: str = "user"
 
+@app.get("/")
+def root():
+    return {"message": "Backend attivo", "status": "ok"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    headers = {"Authorization": f"Bearer {DIFY_API_KEY}", "Content-Type": "application/json"}
+    if not DIFY_API_KEY:
+        raise HTTPException(status_code=500, detail="DIFY_API_KEY non configurata")
+    
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
         "inputs": {},
         "query": request.query,
@@ -44,10 +46,17 @@ async def chat(request: ChatRequest):
         "conversation_id": request.conversation_id,
         "user": request.user
     }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(f"{DIFY_BASE_URL}/chat-messages", json=payload, headers=headers)
-        return resp.json()
-
-@app.get("/")
-def root():
-    return {"message": "Backend attivo"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{DIFY_BASE_URL}/chat-messages",
+                json=payload,
+                headers=headers
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Dify API error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
