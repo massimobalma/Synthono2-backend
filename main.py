@@ -1,3 +1,14 @@
+import psycopg2
+
+conn = psycopg2.connect(os.getenv("DATABASE_URL"))
+cur = conn.cursor()
+
+cur.execute("SELECT version();")
+print(cur.fetchone())
+
+cur.close()
+conn.close()
+
 import os
 import httpx
 from fastapi import FastAPI, HTTPException
