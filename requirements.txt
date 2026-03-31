@@ -2,3 +2,5 @@ fastapi
 uvicorn
 httpx
 pydantic
+psycopg2-binary
+python-multipart
