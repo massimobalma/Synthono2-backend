@@ -1,0 +1,13 @@
+Per entrare in ethi_db da terminale locale:
+
+PS C:\Users\sceci> & "C:\Program Files\PostgreSQL\18\bin\psql.exe" "postgresql://ethidb_user:k7CrbQxMiiVq5p2z3UYkysbp1AhjFjeO@dpg-d75fic4hg0os73aoqkcg-a.oregon-postgres.render.com/ethi_db?sslmode=require"
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE TABLE IF NOT EXISTS users (
+	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+	email TEXT UNIQUE NOT NULL,
+	password_has TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
