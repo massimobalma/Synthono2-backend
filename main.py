@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
-from passlib.context import CryptContext
+from pwdlib import PasswordHash
 from itsdangerous import URLSafeSerializer, BadSignature
 
 app = FastAPI()
@@ -34,7 +34,7 @@ if not SESSION_SECRET:
     raise RuntimeError("SESSION_SECRET non configurata")
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+password_hash = PasswordHash.recommended()
 serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-auth")
 
 SESSION_COOKIE_NAME = "ethi_session"
@@ -58,11 +58,11 @@ class LoginRequest(BaseModel):
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return password_hash.hash(password)
 
 
-def verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+def verify_password(password: str, stored_hash: str) -> bool:
+    return password_hash.verify(password, stored_hash)
 
 
 def create_session_token(user_id: str, email: str) -> str:
@@ -132,6 +132,9 @@ def signup(payload: SignupRequest, response: Response):
 
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="La password deve avere almeno 8 caratteri")
+
+    if len(password) > 200:
+        raise HTTPException(status_code=400, detail="La password è troppo lunga")
 
     password_hash = hash_password(password)
 

@@ -2,7 +2,7 @@ fastapi
 uvicorn
 sqlalchemy
 psycopg2-binary
-passlib[bcrypt]
+pwdlib[argon2]
 python-multipart
 itsdangerous
 httpx
