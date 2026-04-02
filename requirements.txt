@@ -6,4 +6,5 @@ passlib[bcrypt]
 python-multipart
 itsdangerous
 httpx
+email-validator
 
