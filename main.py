@@ -6,6 +6,7 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, HTTPException, Response, Cookie, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
@@ -229,31 +230,65 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
 
     headers = {
         "Authorization": f"Bearer {DIFY_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json".
+        "Accept": "text/event-stream",
     }
     payload = {
         "inputs": {},
         "query": request.query,
-        "response_mode": "blocking",
+        "response_mode": "streaming",
         "conversation_id": request.conversation_id,
         "user": f"user-{user['user_id']}"
     }
+    
+    timeout = httpx.Timeout(120.0, connect=20.0)
+    
+    async def event_generator():
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{DIFY_BASE_URL}/chat-messages",
+                        json=payload,
+                        headers=headers
+                    ) as resp:
+                        resp.raise_for_status()
+    
+                        async for line in resp.aiter_lines():
+                            if not line:
+                                continue
+                            if line.startswith("data: "):
+                                raw = line[6:].strip()
+    
+                                if raw == "[DONE]":
+                                    break
+                                try:
+                                    import jason
+                                    data = json.loads(raw)
+    
+                                    event_type = data.get("event")
+    
+                                    if event_type == "message":
+                                        answer = data.get("answer", "")
+                                        if answer:
+                                            yield answer
+                                    elif event_type == "agent_message":
+                                        answer = data.get("answer","")
+                                        if answer:
+                                            yield answer
+                                    elif event_type == "message_end":
+                                        break
+                                except Exception:
+                                    continue
+    
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 504:
+                yield "\n\n [ERRORE] L'assistente sta impiegando più del tempo previsto. Riprova tra qualche secondo.")
+                return
+            yield f"\n\n [ERRORE] Dify API status error: {e.response.status_code}")
+        except httpx.RequestError:
+            yield f"\n\n [ERRORE] Errore di comunicazione con il motore AI")
+        except Exception as e:
+            yield f"\n\n [Errore interno] {str(e)}"
 
-    try:
-        timeout = httpx.Timeout(90.0, connect=20.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{DIFY_BASE_URL}/chat-messages",
-                json=payload,
-                headers=headers
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 504:
-            raise HTTPException(status_code=504, detail="L'assistente sta impiegando più del tempo previsto. Riprova tra qualche secondo.")
-        raise HTTPException(status_code=502, detail=f"Dify API status error: {e.response.status_code}")
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Errore di comunicazione con il motore AI")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+    return StreamingResponse(event_generator(), media_type="text/plain; charset=utf-8")
