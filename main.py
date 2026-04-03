@@ -16,7 +16,10 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://www.synthono.com",
+        "https://synthono2-backend.onrender.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,7 +89,7 @@ def set_session_cookie(response: Response, token: str) -> None:
         max_age=SESSION_MAX_AGE_SECONDS,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
     )
 
 
@@ -95,7 +98,7 @@ def clear_session_cookie(response: Response) -> None:
         key=SESSION_COOKIE_NAME,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="none",
     )
 
 
