@@ -230,9 +230,10 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
 
     headers = {
         "Authorization": f"Bearer {DIFY_API_KEY}",
-        "Content-Type": "application/json".
+        "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
+
     payload = {
         "inputs": {},
         "query": request.query,
@@ -240,55 +241,63 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
         "conversation_id": request.conversation_id,
         "user": f"user-{user['user_id']}"
     }
-    
+
     timeout = httpx.Timeout(120.0, connect=20.0)
-    
+
     async def event_generator():
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{DIFY_BASE_URL}/chat-messages",
-                        json=payload,
-                        headers=headers
-                    ) as resp:
-                        resp.raise_for_status()
-    
-                        async for line in resp.aiter_lines():
-                            if not line:
-                                continue
-                            if line.startswith("data: "):
-                                raw = line[6:].strip()
-    
-                                if raw == "[DONE]":
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST",
+                    f"{DIFY_BASE_URL}/chat-messages",
+                    json=payload,
+                    headers=headers
+                ) as resp:
+                    resp.raise_for_status()
+
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+
+                        if line.startswith("data: "):
+                            raw = line[6:].strip()
+
+                            if raw == "[DONE]":
+                                break
+
+                            try:
+                                import json
+                                data = json.loads(raw)
+
+                                event_type = data.get("event")
+
+                                if event_type == "message":
+                                    answer = data.get("answer", "")
+                                    if answer:
+                                        yield answer
+
+                                elif event_type == "agent_message":
+                                    answer = data.get("answer", "")
+                                    if answer:
+                                        yield answer
+
+                                elif event_type == "message_end":
                                     break
-                                try:
-                                    import jason
-                                    data = json.loads(raw)
-    
-                                    event_type = data.get("event")
-    
-                                    if event_type == "message":
-                                        answer = data.get("answer", "")
-                                        if answer:
-                                            yield answer
-                                    elif event_type == "agent_message":
-                                        answer = data.get("answer","")
-                                        if answer:
-                                            yield answer
-                                    elif event_type == "message_end":
-                                        break
-                                except Exception:
-                                    continue
-    
+
+                            except Exception:
+                                continue
+
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 504:
-                yield "\n\n [ERRORE] L'assistente sta impiegando più del tempo previsto. Riprova tra qualche secondo.")
+                yield "\n\n[ERRORE] L'assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo."
                 return
-            yield f"\n\n [ERRORE] Dify API status error: {e.response.status_code}")
+
+            yield f"\n\n[ERRORE] Dify API status error: {e.response.status_code}"
+
         except httpx.RequestError:
-            yield f"\n\n [ERRORE] Errore di comunicazione con il motore AI")
+            yield "\n\n[ERRORE] Errore di comunicazione con il motore AI."
+
         except Exception as e:
-            yield f"\n\n [Errore interno] {str(e)}"
+            yield f"\n\n[ERRORE INTERNO] {str(e)}"
 
     return StreamingResponse(event_generator(), media_type="text/plain; charset=utf-8")
