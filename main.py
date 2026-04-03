@@ -239,7 +239,8 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        timeout = httpx.Timeout(90.0, connect=20.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{DIFY_BASE_URL}/chat-messages",
                 json=payload,
@@ -247,7 +248,10 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
             )
             resp.raise_for_status()
             return resp.json()
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"Dify API error: {str(e)}")
+    except httpx.HTTPStatusError as e:
+        detail = e.response.text
+        raise HTTPException(status_code=502, detail=f"Dify API status error: {e.response.status_code}: {detail}")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Dify API request error: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
