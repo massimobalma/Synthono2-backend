@@ -1,10 +1,10 @@
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response, Cookie, Depends
+from fastapi import FastAPI, HTTPException, Response, Cookie, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import create_engine, text
@@ -18,6 +18,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://www.synthono.com",
+        "https://synthono.com",
         "https://synthono2-backend.onrender.com",
     ],
     allow_credentials=True,
@@ -249,9 +250,10 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
-        detail = e.response.text
-        raise HTTPException(status_code=502, detail=f"Dify API status error: {e.response.status_code}: {detail}")
+        if e.response.status_code == 504:
+            raise HTTPException(status_code=504, detail="L'assistente sta impiegando più del tempo previsto. Riprova tra qualche secondo.")
+        raise HTTPException(status_code=502, detail=f"Dify API status error: {e.response.status_code}")
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Dify API request error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Errore di comunicazione con il motore AI")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
