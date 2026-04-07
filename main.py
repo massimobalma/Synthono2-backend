@@ -1,6 +1,6 @@
 import os
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
@@ -60,6 +60,12 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+class ForgotPasswordRequest (BaseModel):
+    email: EmailStr
+
+class ResetPasswordRequest (BaseModel):
+    token: str
+    password: str
 
 
 def hash_password(password: str) -> str:
@@ -82,6 +88,19 @@ def create_session_token(user_id: str, email: str) -> str:
 
 def decode_session_token(token: str) -> dict:
     return serializer.loads(token)
+
+def create_reset_token(email: str) -> str:
+    payload = {
+        "email": email,
+        "issued_at": datetime.utcnow().isoformat(),
+        "nonce": secrets.token_hex(8),
+    }
+    reset_serializer = URLSafeSerializer(SESSION_SECRET, salt = "ethi-reset")
+    return reset_serializer.dumps(payload)
+
+def decode_reset_token(token: str) -> dict:
+    reset_serializer = URLSafeSerializer(SESSION_SECRET, salt = "ethi-reset")
+    return reset_serializer.loads(token)
 
 
 def set_session_cookie(response: Response, token: str) -> None:
@@ -205,6 +224,136 @@ def login(payload: LoginRequest, response: Response):
         },
     }
 
+@app.post("/auth/forgot-password")
+def forgot_password(payload: ForgotPasswordRequest):
+    email = payload.email.strip().lower()
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, email
+                    FROM users
+                    WHERE email = :email
+                """),
+                {"email": email},
+            )
+            user = result.mappings().first()
+
+        if user:
+            token = create_reset_token(user["email"])
+            token_hash = hash_password(token)
+            expires_at = datetime.utcnow() + timedelta(hours=1)
+
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+                        VALUES (:user_id, :token_hash, :expires_at)
+                    """),
+                    {
+                        "user_id": str(user["id"]),
+                        "token_hash": token_hash,
+                        "expires_at": expires_at,
+                    },
+                )
+
+            print(f"RESET LINK per {user['email']}: https://www.synthono.com/reset-password.html?token={token}")
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore database: {str(e)}")
+
+    return {
+        "message": "Se l'indirizzo email è registrato, riceverai un link per reimpostare la password."
+    }
+
+@app.post("/auth/reset-password")
+def reset_password(payload: ResetPasswordRequest):
+    token = payload.token
+    new_password = payload.password
+
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="La password deve avere almeno 8 caratteri")
+
+    if len(new_password) > 200:
+        raise HTTPException(status_code=400, detail="La password è troppo lunga")
+
+    try:
+        token_data = decode_reset_token(token)
+        email = token_data["email"].strip().lower()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Token non valido")
+
+    try:
+        with engine.connect() as conn:
+            user_result = conn.execute(
+                text("""
+                    SELECT id, email
+                    FROM users
+                    WHERE email = :email
+                """),
+                {"email": email},
+            )
+            user = user_result.mappings().first()
+
+            if not user:
+                raise HTTPException(status_code=400, detail="Token non valido")
+
+            token_rows = conn.execute(
+                text("""
+                    SELECT id, token_hash, expires_at, used_at
+                    FROM password_reset_tokens
+                    WHERE user_id = :user_id
+                    ORDER BY created_at DESC
+                """),
+                {"user_id": str(user["id"])},
+            ).mappings().all()
+
+        valid_token_row = None
+        now = datetime.utcnow()
+
+        for row in token_rows:
+            if row["used_at"] is not None:
+                continue
+            if row["expires_at"] < now:
+                continue
+            if verify_password(token, row["token_hash"]):
+                valid_token_row = row
+                break
+
+        if not valid_token_row:
+            raise HTTPException(status_code=400, detail="Token non valido o scaduto")
+
+        new_password_hash = hash_password(new_password)
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE users
+                    SET password_hash = :password_hash
+                    WHERE id = :user_id
+                """),
+                {
+                    "password_hash": new_password_hash,
+                    "user_id": str(user["id"]),
+                },
+            )
+
+            conn.execute(
+                text("""
+                    UPDATE password_reset_tokens
+                    SET used_at = NOW()
+                    WHERE id = :token_id
+                """),
+                {"token_id": str(valid_token_row["id"])},
+            )
+
+        return {"message": "Password aggiornata con successo"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.post("/auth/logout")
 def logout(response: Response):
