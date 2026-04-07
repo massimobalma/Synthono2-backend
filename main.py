@@ -1,6 +1,6 @@
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
@@ -80,7 +80,7 @@ def create_session_token(user_id: str, email: str) -> str:
     payload = {
         "user_id": user_id,
         "email": email,
-        "issued_at": datetime.utcnow().isoformat(),
+        "issued_at": datetime.now(timezone.utc).isoformat(),
         "nonce": secrets.token_hex(8),
     }
     return serializer.dumps(payload)
@@ -92,7 +92,7 @@ def decode_session_token(token: str) -> dict:
 def create_reset_token(email: str) -> str:
     payload = {
         "email": email,
-        "issued_at": datetime.utcnow().isoformat(),
+        "issued_at": datetime.now(timezone.utc).isoformat(),
         "nonce": secrets.token_hex(8),
     }
     reset_serializer = URLSafeSerializer(SESSION_SECRET, salt = "ethi-reset")
@@ -243,7 +243,7 @@ def forgot_password(payload: ForgotPasswordRequest):
         if user:
             token = create_reset_token(user["email"])
             token_hash = hash_password(token)
-            expires_at = datetime.utcnow() + timedelta(hours=1)
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
 
             with engine.begin() as conn:
                 conn.execute(
@@ -310,7 +310,7 @@ def reset_password(payload: ResetPasswordRequest):
             ).mappings().all()
 
         valid_token_row = None
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         for row in token_rows:
             if row["used_at"] is not None:
