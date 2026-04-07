@@ -271,33 +271,33 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
 
                                 event_type = data.get("event")
 
-                                if event_type == "message":
+                                if event_type in ( "message", "agent_message"):
                                     answer = data.get("answer", "")
                                     if answer:
-                                        yield answer
-
-                                elif event_type == "agent_message":
-                                    answer = data.get("answer", "")
-                                    if answer:
-                                        yield answer
+                                        yield f"data: {json.dumps({json.dumps({'chunk': answer})}\n\n"
 
                                 elif event_type == "message_end":
-                                    break
+                                        yield "data: [DONE]\n\n"
+                                        break
 
                             except Exception:
                                 continue
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 504:
-                yield "\n\n[ERRORE] L'assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo."
+                yield f"data: {json.dumps({'error': L'assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo.\n\n"
+                yield "data: [DONE]\n\n"
                 return
 
-            yield f"\n\n[ERRORE] Dify API status error: {e.response.status_code}"
+            yield f"data: {json.dumps ({'error': f'Dify API status error: {e.response.status_code}'})}\n\n"
+            yield "data: [DONE]\n\n"
 
         except httpx.RequestError:
-            yield "\n\n[ERRORE] Errore di comunicazione con il motore AI."
+            yield f"data: {json.dumps({'error': 'Errore di comunicazione con il motore AI.'})}\n\n"
+            yield "data: [DONE]\n\n"                   
 
         except Exception as e:
-            yield f"\n\n[ERRORE INTERNO] {str(e)}"
+            yield f"data: {json.dumps({'error': f'Errore interno: {str(e)}'})}\n\n"                   
+            yield "data: [DONE]\n\n"     
 
-    return StreamingResponse(event_generator(), media_type="text/plain; charset=utf-8")
+    return StreamingResponse(event_generator(), media_type="text/event-stream, headers = { "Cache-Control": "no-cache","Connection": "keep-alive", "X-Accel-Buffering": "no"})
