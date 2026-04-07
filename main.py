@@ -245,6 +245,8 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
     timeout = httpx.Timeout(120.0, connect=20.0)
 
     async def event_generator():
+        import json
+
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream(
@@ -263,41 +265,48 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
                             raw = line[6:].strip()
 
                             if raw == "[DONE]":
+                                yield "data: [DONE]\n\n"
                                 break
 
                             try:
-                                import json
                                 data = json.loads(raw)
-
                                 event_type = data.get("event")
 
-                                if event_type in ( "message", "agent_message"):
+                                if event_type in ("message", "agent_message"):
                                     answer = data.get("answer", "")
                                     if answer:
-                                        yield f"data: {json.dumps({json.dumps({'chunk': answer})}\n\n"
+                                        yield f"data: {json.dumps({'chunk': answer})}\n\n"
 
                                 elif event_type == "message_end":
-                                        yield "data: [DONE]\n\n"
-                                        break
+                                    yield "data: [DONE]\n\n"
+                                    break
 
                             except Exception:
                                 continue
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 504:
-                yield f"data: {json.dumps({'error': L'assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo.\n\n"
+                yield f"data: {json.dumps({'error': 'L’assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo.'})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
 
-            yield f"data: {json.dumps ({'error': f'Dify API status error: {e.response.status_code}'})}\n\n"
+            yield f"data: {json.dumps({'error': f'Dify API status error: {e.response.status_code}'})}\n\n"
             yield "data: [DONE]\n\n"
 
         except httpx.RequestError:
             yield f"data: {json.dumps({'error': 'Errore di comunicazione con il motore AI.'})}\n\n"
-            yield "data: [DONE]\n\n"                   
+            yield "data: [DONE]\n\n"
 
         except Exception as e:
-            yield f"data: {json.dumps({'error': f'Errore interno: {str(e)}'})}\n\n"                   
-            yield "data: [DONE]\n\n"     
+            yield f"data: {json.dumps({'error': f'Errore interno: {str(e)}'})}\n\n"
+            yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream, headers = { "Cache-Control": "no-cache","Connection": "keep-alive", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
