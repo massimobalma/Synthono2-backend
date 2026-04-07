@@ -258,7 +258,7 @@ def forgot_password(payload: ForgotPasswordRequest):
                     },
                 )
 
-            print(f"RESET LINK per {user['email']}: https://www.synthono.com/reset-password.html?token={token}")
+            print(f"RESET LINK per {user['email']}: https://www.synthono.com/Test/reset-password.html?token={token}")
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore database: {str(e)}")
