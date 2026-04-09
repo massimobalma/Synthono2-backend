@@ -1,5 +1,6 @@
 import os
 import secrets
+import smtplib
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,6 +13,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 from pwdlib import PasswordHash
 from itsdangerous import URLSafeSerializer, BadSignature
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 app = FastAPI()
 
@@ -31,6 +34,12 @@ DIFY_API_KEY = os.getenv("DIFY_API_KEY")
 DIFY_BASE_URL = os.getenv("DIFY_BASE_URL", "https://api.dify.ai/v1")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SESSION_SECRET = os.getenv("SESSION_SECRET")
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+MAIL_FROM = os.getenv("MAIL_FROM", SMTP_USER or "synthono@synthono.com")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://www.synthono.com")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL non configurata")
@@ -99,8 +108,57 @@ def create_reset_token(email: str) -> str:
     return reset_serializer.dumps(payload)
 
 def decode_reset_token(token: str) -> dict:
-    reset_serializer = URLSafeSerializer(SESSION_SECRET, salt = "ethi-reset")
+    reset_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-reset")
     return reset_serializer.loads(token)
+
+def send_reset_email(to_email: str, token: str) -> None:
+    if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
+        raise RuntimeError("Configurazione SMTP incompleta")
+
+    reset_link = f"{APP_BASE_URL}/reset-password.html?token={token}"
+
+    subject = "Reimposta la tua password SynthONO"
+
+    text_body = f"""
+Abbiamo ricevuto una richiesta di reimpostazione della password per il tuo account SynthONO.
+
+Apri questo link per reimpostare la password:
+{reset_link}
+
+Il link scade tra 1 ora.
+
+Se non hai richiesto tu questa operazione, puoi ignorare questa email.
+""".strip()
+
+    html_body = f"""
+<html>
+  <body style="font-family: Arial, sans-serif; color: #222; line-height: 1.6;">
+    <h2 style="color: #2c6fbb;">Reimposta la tua password</h2>
+    <p>Abbiamo ricevuto una richiesta di reimpostazione della password per il tuo account SynthONO.</p>
+    <p>
+      <a href="{reset_link}" style="display:inline-block;padding:12px 18px;background:#2c6fbb;color:#ffffff;text-decoration:none;border-radius:8px;">
+        Reimposta password
+      </a>
+    </p>
+    <p>Se il pulsante non funziona, copia e incolla questo link nel browser:</p>
+    <p>{reset_link}</p>
+    <p>Il link scade tra 1 ora.</p>
+    <p>Se non hai richiesto tu questa operazione, puoi ignorare questa email.</p>
+  </body>
+</html>
+""".strip()
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = MAIL_FROM
+    msg["To"] = to_email
+
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(MAIL_FROM, [to_email], msg.as_string())
 
 
 def set_session_cookie(response: Response, token: str) -> None:
@@ -258,10 +316,12 @@ def forgot_password(payload: ForgotPasswordRequest):
                     },
                 )
 
-            print(f"RESET LINK per {user['email']}: https://www.synthono.com/Test/reset-password.html?token={token}")
+            send_reset_email(user["email"], token)
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore database: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
     return {
         "message": "Se l'indirizzo email è registrato, riceverai un link per reimpostare la password."
