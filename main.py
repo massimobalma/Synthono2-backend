@@ -76,6 +76,10 @@ class ResetPasswordRequest (BaseModel):
     token: str
     password: str
 
+class ChangePasswordRequest (BaseModel):
+    current_password: str
+    new_password: str
+
 
 def hash_password(password: str) -> str:
     return password_hash.hash(password)
@@ -414,6 +418,58 @@ def reset_password(payload: ResetPasswordRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+@app.post("auth/change-password")
+def change_password(payload: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+    current_password = payload.current_password
+    new_password = payload.new_password
+
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="La nuova password deve avere almeno 8 caratteri")
+
+    if len(new_password > 200:
+        raise HTTPException(status_code=400, detail="La nuova password è troppo lunga")
+        
+    try:
+        with engine.connnect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, mail, password_hash
+                    FROM users
+                    WHERE id = :user_id
+                """),
+                {"user_id": user["user_id"]},
+                )
+                db_user = result.mappings().first()
+
+        if not db_user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+        if not verify_password(current_password, db_user["password_hash"]):
+            raise HTTPException(status_code=401, detail="La password attuale non è corretta")
+
+        new_password_hash = hash_password(new_password)
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE users
+                    SET password_hash = :password_hash
+                    WHERE id = :user_id
+                """),
+                {
+                    "password_hash": new_password_hash,
+                    "user_id": user["user_id"],
+                },
+            )
+
+        return {"message": "Password aggiornata con successo"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+    
 
 @app.post("/auth/logout")
 def logout(response: Response):
