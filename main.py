@@ -427,7 +427,7 @@ def change_password(payload: ChangePasswordRequest, user: dict = Depends(get_cur
     if len(new_password) < 8:
         raise HTTPException(status_code=400, detail="La nuova password deve avere almeno 8 caratteri")
 
-    if len(new_password > 200:
+    if len(new_password) > 200:
         raise HTTPException(status_code=400, detail="La nuova password è troppo lunga")
         
     try:
