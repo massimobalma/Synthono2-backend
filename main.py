@@ -440,7 +440,7 @@ def change_password(payload: ChangePasswordRequest, user: dict = Depends(get_cur
                 """),
                 {"user_id": user["user_id"]},
                 )
-                db_user = result.mappings().first()
+            db_user = result.mappings().first()
 
         if not db_user:
             raise HTTPException(status_code=404, detail="Utente non trovato")
