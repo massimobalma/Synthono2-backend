@@ -115,7 +115,7 @@ def send_reset_email(to_email: str, token: str) -> None:
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
         raise RuntimeError("Configurazione SMTP incompleta")
 
-    reset_link = f"{APP_BASE_URL}/reset-password.html?token={token}"
+    reset_link = f"{APP_BASE_URL}/Test/reset-password.html?token={token}"
 
     subject = "Reimposta la tua password SynthONO"
 
