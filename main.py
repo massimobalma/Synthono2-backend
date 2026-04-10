@@ -65,16 +65,19 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str
 
-
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    
 class ForgotPasswordRequest (BaseModel):
     email: EmailStr
 
 class ResetPasswordRequest (BaseModel):
     token: str
     password: str
+
+class VerifyEmailRequest (BaseModel):
+    token: str
 
 class ChangePasswordRequest (BaseModel):
     current_password: str
@@ -115,6 +118,19 @@ def decode_reset_token(token: str) -> dict:
     reset_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-reset")
     return reset_serializer.loads(token)
 
+def create_email_verification_token(email: str) -> str:
+    payload = {
+        "email": email,
+        "iussued_at": date_time.now(timezone.utc).isoformat(),
+        "nonce": secret.token_hex(8),
+    }
+    verify_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-verify-email")
+    return verify_serializer.dumps(payload)
+
+def decode_email_verification_token(token: str) -> dict:
+    verify_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-verify-email")
+    return verify_serializer.loads(token)
+
 def send_reset_email(to_email: str, token: str) -> None:
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
         raise RuntimeError("Configurazione SMTP incompleta")
@@ -124,46 +140,92 @@ def send_reset_email(to_email: str, token: str) -> None:
     subject = "Reimposta la tua password SynthONO"
 
     text_body = f"""
-Abbiamo ricevuto una richiesta di reimpostazione della password per il tuo account SynthONO.
+    Abbiamo ricevuto una richiesta di reimpostazione della password per il tuo account SynthONO.
 
-Apri questo link per reimpostare la password:
-{reset_link}
+    Apri questo link per reimpostare la password:
+    {reset_link}
 
-Il link scade tra 1 ora.
+    Il link scade tra 1 ora.
 
-Se non hai richiesto tu questa operazione, puoi ignorare questa email.
-""".strip()
+    Se non hai richiesto tu questa operazione, puoi ignorare questa email.
+    """.strip()
 
     html_body = f"""
-<html>
-  <body style="font-family: Arial, sans-serif; color: #222; line-height: 1.6;">
-    <h2 style="color: #2c6fbb;">Reimposta la tua password</h2>
-    <p>Abbiamo ricevuto una richiesta di reimpostazione della password per il tuo account SynthONO.</p>
-    <p>
-      <a href="{reset_link}" style="display:inline-block;padding:12px 18px;background:#2c6fbb;color:#ffffff;text-decoration:none;border-radius:8px;">
-        Reimposta password
-      </a>
-    </p>
-    <p>Se il pulsante non funziona, copia e incolla questo link nel browser:</p>
-    <p>{reset_link}</p>
-    <p>Il link scade tra 1 ora.</p>
-    <p>Se non hai richiesto tu questa operazione, puoi ignorare questa email.</p>
-  </body>
-</html>
-""".strip()
+    <html>
+      <body style="font-family: Arial, sans-serif; color: #222; line-height: 1.6;">
+        <h2 style="color: #2c6fbb;">Reimposta la tua password</h2>
+        <p>Abbiamo ricevuto una richiesta di reimpostazione della password per il tuo account SynthONO.</p>
+        <p>
+          <a href="{reset_link}" style="display:inline-block;padding:12px 18px;background:#2c6fbb;color:#ffffff;text-decoration:none;border-radius:8px;">
+            Reimposta password
+          </a>
+        </p>
+        <p>Se il pulsante non funziona, copia e incolla questo link nel browser:</p>
+        <p>{reset_link}</p>
+        <p>Il link scade tra 1 ora.</p>
+        <p>Se non hai richiesto tu questa operazione, puoi ignorare questa email.</p>
+      </body>
+    </html>
+    """.strip()
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = MAIL_FROM
-    msg["To"] = to_email
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = MAIL_FROM
+        msg["To"] = to_email
 
-    msg.attach(MIMEText(text_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-        server.login(SMTP_USER, SMTP_PASSWORD)
-        server.sendmail(MAIL_FROM, [to_email], msg.as_string())
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(MAIL_FROM, [to_email], msg.as_string())
 
+def send_verification_email(to_email: str, token: str) -> None:
+    if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
+        raise RuntimeError("Configurazione SMTP incompleta")
+
+    verify_link = f"https://synthono.com/Test/verify-email.html?token={token}"
+
+    subject = "Verifica il tuo account SynthONO"
+
+    text_body = f"""
+    Benvenuto su SynthONO.
+
+    Per attivare il tuo account, apri questo link:
+    {verify_link}
+
+    Se non hai richiesto tu la registrazione, puoi ignorare questa email.
+    """.strip()
+
+        html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color: #222; line-height: 1.6;">
+        <h2 style="color: #2c6fbb;">Verifica il tuo account</h2>
+        <p>Benvenuto su SynthONO.</p>
+        <p>Per attivare il tuo account, clicca qui:</p>
+        <p>
+          <a href="{verify_link}" style="display:inline-block;padding:12px 18px;background:#2c6fbb;color:#ffffff;text-decoration:none;border-radius:8px;">
+            Verifica account
+          </a>
+        </p>
+        <p>Se il pulsante non funziona, copia e incolla questo link nel browser:</p>
+        <p>{verify_link}</p>
+        <p>Se non hai richiesto tu la registrazione, puoi ignorare questa email.</p>
+      </body>
+    </html>
+    """.strip()
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = MAIL_FROM
+        msg["To"] = to_email
+
+        msg.attach(MIMEText(text_body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(MAIL_FROM, [to_email], msg.as_string())
 
 def set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
@@ -242,6 +304,9 @@ def signup(payload: SignupRequest, response: Response):
 
     token = create_session_token(str(user["id"]), user["email"])
     set_session_cookie(response, token)
+
+    verify_token = create_emaill_verification_token(user["email"])
+    send_verification_email(user["email"], verify_token)
 
     return {
         "message": "Registrazione completata",
@@ -413,6 +478,41 @@ def reset_password(payload: ResetPasswordRequest):
             )
 
         return {"message": "Password aggiornata con successo"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@app.post("/auth/verify-email")
+def verify_email(payload: VerifyEmailRequest):
+    token = payload.token
+
+    try:
+        token_data = decode_email_verification_token(token)
+        email = token_data["email"].strip().lower()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Token non valido")
+
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    UPDATE users
+                    SET is_verified = TRUE,
+                        verified_at = NOW()
+                    WHERE email = :email
+                    RETURNING id, email, is_verified, verified_at
+                """),
+                {"email": email},
+            )
+            user = result.mappings().first()
+
+        if not user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+
+        return {"message": "Email verificata con successo"}
 
     except HTTPException:
         raise
