@@ -127,6 +127,7 @@ def create_email_verification_token(email: str) -> str:
     verify_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-verify-email")
     return verify_serializer.dumps(payload)
 
+
 def decode_email_verification_token(token: str) -> dict:
     verify_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-verify-email")
     return verify_serializer.loads(token)
@@ -198,19 +199,19 @@ Se non hai richiesto tu la registrazione, puoi ignorare questa email.
 
     html_body = f"""
 <html>
-    <body style="font-family: Arial, sans-serif; color: #222; line-height: 1.6;">
-        <h2 style="color: #2c6fbb;">Verifica il tuo account</h2>
-        <p>Benvenuto su SynthONO.</p>
-        <p>Per attivare il tuo account, clicca qui:</p>
-        <p>
-          <a href="{verify_link}" style="display:inline-block;padding:12px 18px;background:#2c6fbb;color:#ffffff;text-decoration:none;border-radius:8px;">
-              Verifica account
-          </a>
-        </p>
-        <p>Se il pulsante non funziona, copia e incolla questo link nel browser:</p>
-        <p>{verify_link}</p>
-        <p>Se non hai richiesto tu la registrazione, puoi ignorare questa email.</p>
-    </body>
+  <body style="font-family: Arial, sans-serif; color: #222; line-height: 1.6;">
+    <h2 style="color: #2c6fbb;">Verifica il tuo account</h2>
+    <p>Benvenuto su SynthONO.</p>
+    <p>Per attivare il tuo account, clicca qui:</p>
+    <p>
+      <a href="{verify_link}" style="display:inline-block;padding:12px 18px;background:#2c6fbb;color:#ffffff;text-decoration:none;border-radius:8px;">
+        Verifica account
+      </a>
+    </p>
+    <p>Se il pulsante non funziona, copia e incolla questo link nel browser:</p>
+    <p>{verify_link}</p>
+    <p>Se non hai richiesto tu la registrazione, puoi ignorare questa email.</p>
+  </body>
 </html>
 """.strip()
 
@@ -301,11 +302,11 @@ def signup(payload: SignupRequest, response: Response):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore database: {str(e)}")
 
-    token = create_session_token(str(user["id"]), user["email"])
-    set_session_cookie(response, token)
-
     verify_token = create_email_verification_token(user["email"])
     send_verification_email(user["email"], verify_token)
+
+    token = create_session_token(str(user["id"]), user["email"])
+    set_session_cookie(response, token)
 
     return {
         "message": "Registrazione completata",
