@@ -168,17 +168,16 @@ def send_reset_email(to_email: str, token: str) -> None:
     </html>
     """.strip()
 
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = MAIL_FROM
-        msg["To"] = to_email
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = MAIL_FROM
+    msg["To"] = to_email
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-        msg.attach(MIMEText(text_body, "plain", "utf-8"))
-        msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(MAIL_FROM, [to_email], msg.as_string())
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(MAIL_FROM, [to_email], msg.as_string())
 
 def send_verification_email(to_email: str, token: str) -> None:
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
