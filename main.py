@@ -257,6 +257,34 @@ def get_current_user(ethi_session: Optional[str] = Cookie(default=None)) -> dict
     except BadSignature:
         raise HTTPException(status_code=401, detail="Sessione non valida")
 
+def get_verified_user(user: dict = Depends(get_current_user)) -> dict:
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, email, is_verified
+                    FROM users
+                    WHERE id = :user_id
+                """),
+                {"user_id": user["user_id"]},
+            )
+            db_user = result.mappings().first()
+
+        if not db_user:
+            raise HTTPException(status_code=401, detail="Utente non trovato")
+
+        if not db_user["is_verified"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Devi verificare la tua email prima di usare l'app"
+            )
+
+        return user
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.get("/")
 def root():
@@ -305,11 +333,8 @@ def signup(payload: SignupRequest, response: Response):
     verify_token = create_email_verification_token(user["email"])
     send_verification_email(user["email"], verify_token)
 
-    token = create_session_token(str(user["id"]), user["email"])
-    set_session_cookie(response, token)
-
     return {
-        "message": "Registrazione completata",
+        "message": "Registrazione completata. Controlla la tua email per verificare l'account.",
         "user": {
             "id": str(user["id"]),
             "email": user["email"],
@@ -327,7 +352,7 @@ def login(payload: LoginRequest, response: Response):
         with engine.connect() as conn:
             result = conn.execute(
                 text("""
-                    SELECT id, email, password_hash, created_at
+                    SELECT id, email, password_hash, created_at, is_verified
                     FROM users
                     WHERE email = :email
                 """),
@@ -339,6 +364,12 @@ def login(payload: LoginRequest, response: Response):
 
     if not user or not verify_password(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
+
+    if not user["is_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Devi verificare la tua email prima di accedere"
+            )
 
     token = create_session_token(str(user["id"]), user["email"])
     set_session_cookie(response, token)
@@ -520,7 +551,7 @@ def verify_email(payload: VerifyEmailRequest):
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.post("/auth/change-password")
-def change_password(payload: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+def change_password(payload: ChangePasswordRequest, user: dict = Depends(get_verified_user)):
     current_password = payload.current_password
     new_password = payload.new_password
 
@@ -578,7 +609,7 @@ def logout(response: Response):
 
 
 @app.get("/auth/me")
-def auth_me(user: dict = Depends(get_current_user)):
+def auth_me(user: dict = Depends(get_verified_user)):
     return {
         "authenticated": True,
         "user": {
@@ -589,7 +620,7 @@ def auth_me(user: dict = Depends(get_current_user)):
 
 
 @app.post("/chat")
-async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
+async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     if not DIFY_API_KEY:
         raise HTTPException(status_code=500, detail="DIFY_API_KEY non configurata")
 
