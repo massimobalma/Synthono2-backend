@@ -121,8 +121,8 @@ def decode_reset_token(token: str) -> dict:
 def create_email_verification_token(email: str) -> str:
     payload = {
         "email": email,
-        "issued_at": date_time.now(timezone.utc).isoformat(),
-        "nonce": secret.token_hex(8),
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+        "nonce": secrets.token_hex(8),
     }
     verify_serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-verify-email")
     return verify_serializer.dumps(payload)
