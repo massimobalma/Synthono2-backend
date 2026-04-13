@@ -618,6 +618,47 @@ def auth_me(user: dict = Depends(get_verified_user)):
         },
     }
 
+@app.get("/auth/profile")
+def auth_profile(user: dict = Depends(get_verified_user)):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, email, created_at, is_verified, verified_at
+                    FROM users
+                    WHERE id = :user_id
+                """),
+                {"user_id": user["user_id"]},
+            )
+            db_user = result.mappings().first()
+
+        if not db_user:
+            raise HTTPException(status_code=404, detail="Utente non trovato")
+
+        return {
+            "user": {
+                "id": str(db_user["id"]),
+                "email": db_user["email"],
+                "created_at": str(db_user["created_at"]),
+                "is_verified": bool(db_user["is_verified"]),
+                "verified_at": str(db_user["verified_at"]) if db_user["verified_at"] else None,
+            },
+            "subscription": {
+                "plan_name": "Base",
+                "status": "non attivo",
+                "billing_model": "non ancora configurato"
+            },
+            "usage": {
+                "analyses_used": 0,
+                "analyses_available": "non ancora configurato"
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
 
 @app.post("/chat")
 async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
