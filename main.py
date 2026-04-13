@@ -83,6 +83,8 @@ class ChangePasswordRequest (BaseModel):
     current_password: str
     new_password: str
 
+class CreateConversationRequest (BaseModel):
+    title: str = "Nuova conversazione"
 
 def hash_password(password: str) -> str:
     return password_hash.hash(password)
@@ -652,6 +654,139 @@ def auth_profile(user: dict = Depends(get_verified_user)):
                 "analyses_used": 0,
                 "analyses_available": "non ancora configurato"
             }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@app.post("/conversations")
+def create_conversation(
+    payload: CreateConversationRequest,
+    user: dict = Depends(get_verified_user)
+):
+    title = (payload.title or "Nuova conversazione").strip()
+    if not title:
+        title = "Nuova conversazione"
+
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("""
+                    INSERT INTO conversations (user_id, title)
+                    VALUES (:user_id, :title)
+                    RETURNING id, title, dify_conversation_id, created_at, updated_at, last_message_at
+                """),
+                {
+                    "user_id": user["user_id"],
+                    "title": title,
+                },
+            )
+            conversation = result.mappings().first()
+
+        return {
+            "conversation": {
+                "id": str(conversation["id"]),
+                "title": conversation["title"],
+                "dify_conversation_id": conversation["dify_conversation_id"],
+                "created_at": str(conversation["created_at"]),
+                "updated_at": str(conversation["updated_at"]),
+                "last_message_at": str(conversation["last_message_at"]),
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@app.get("/conversations")
+def list_conversations(user: dict = Depends(get_verified_user)):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, title, dify_conversation_id, created_at, updated_at, last_message_at
+                    FROM conversations
+                    WHERE user_id = :user_id
+                      AND is_archived = FALSE
+                    ORDER BY last_message_at DESC
+                    LIMIT 20
+                """),
+                {"user_id": user["user_id"]},
+            )
+            rows = result.mappings().all()
+
+        return {
+            "conversations": [
+                {
+                    "id": str(row["id"]),
+                    "title": row["title"],
+                    "dify_conversation_id": row["dify_conversation_id"],
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                    "last_message_at": str(row["last_message_at"]),
+                }
+                for row in rows
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+
+@app.get("/conversations/{conversation_id}/messages")
+def get_conversation_messages(
+    conversation_id: str,
+    user: dict = Depends(get_verified_user)
+):
+    try:
+        with engine.connect() as conn:
+            conversation_result = conn.execute(
+                text("""
+                    SELECT id, title
+                    FROM conversations
+                    WHERE id = :conversation_id
+                      AND user_id = :user_id
+                      AND is_archived = FALSE
+                """),
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": user["user_id"],
+                },
+            )
+            conversation = conversation_result.mappings().first()
+
+            if not conversation:
+                raise HTTPException(status_code=404, detail="Conversazione non trovata")
+
+            messages_result = conn.execute(
+                text("""
+                    SELECT id, role, content, dify_message_id, created_at
+                    FROM messages
+                    WHERE conversation_id = :conversation_id
+                    ORDER BY created_at ASC
+                """),
+                {"conversation_id": conversation_id},
+            )
+            rows = messages_result.mappings().all()
+
+        return {
+            "conversation": {
+                "id": str(conversation["id"]),
+                "title": conversation["title"],
+            },
+            "messages": [
+                {
+                    "id": str(row["id"]),
+                    "role": row["role"],
+                    "content": row["content"],
+                    "dify_message_id": row["dify_message_id"],
+                    "created_at": str(row["created_at"]),
+                }
+                for row in rows
+            ]
         }
 
     except HTTPException:
