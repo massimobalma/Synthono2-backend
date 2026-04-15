@@ -822,6 +822,35 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     if not DIFY_API_KEY:
         raise HTTPException(status_code=500, detail="DIFY_API_KEY non configurata")
 
+    try:
+        with engine.connect() as conn:
+            usage_result = conn.execute(
+                text("""
+                    SELECT usage_count, usage_limit
+                    FROM subscriptions
+                    WHERE user_id = :user_id
+                """),
+                {"user_id": user["user_id"]},
+            )
+            usage_row = usage_result.mappings().first()
+    
+        if not usage_row:
+            raise HTTPException(status_code=403, detail="Nessun piano associato all'account")
+    
+        usage_count = usage_row["usage_count"] or 0
+        usage_limit = usage_row["usage_limit"] or 0
+    
+        if usage_limit > 0 and usage_count >= usage_limit:
+            raise HTTPException(
+                status_code=403,
+                detail="Hai esaurito le analisi disponibili nel tuo piano"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore controllo utilizzi: {str(e)}")
+
     local_conversation_id = (request.conversation_id or "").strip()
     if not local_conversation_id:
         raise HTTPException(status_code=400, detail="conversation_id mancante")
