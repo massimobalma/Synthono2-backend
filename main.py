@@ -800,6 +800,65 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     if not DIFY_API_KEY:
         raise HTTPException(status_code=500, detail="DIFY_API_KEY non configurata")
 
+    local_conversation_id = (request.conversation_id or "").strip()
+    if not local_conversation_id:
+        raise HTTPException(status_code=400, detail="conversation_id mancante")
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, title, dify_conversation_id
+                    FROM conversations
+                    WHERE id = :conversation_id
+                      AND user_id = :user_id
+                      AND is_archived = FALSE
+                """),
+                {
+                    "conversation_id": local_conversation_id,
+                    "user_id": user["user_id"],
+                },
+            )
+            conversation = result.mappings().first()
+
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversazione non trovata")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+    user_message = request.query.strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Messaggio vuoto")
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO messages (conversation_id, role, content)
+                    VALUES (:conversation_id, 'user', :content)
+                """),
+                {
+                    "conversation_id": local_conversation_id,
+                    "content": user_message,
+                },
+            )
+
+            conn.execute(
+                text("""
+                    UPDATE conversations
+                    SET updated_at = NOW(),
+                        last_message_at = NOW()
+                    WHERE id = :conversation_id
+                """),
+                {"conversation_id": local_conversation_id},
+            )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio messaggio utente: {str(e)}")
+
     headers = {
         "Authorization": f"Bearer {DIFY_API_KEY}",
         "Content-Type": "application/json",
@@ -808,9 +867,9 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
 
     payload = {
         "inputs": {},
-        "query": request.query,
+        "query": user_message,
         "response_mode": "streaming",
-        "conversation_id": request.conversation_id,
+        "conversation_id": conversation["dify_conversation_id"] or "",
         "user": f"user-{user['user_id']}"
     }
 
@@ -818,6 +877,10 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
 
     async def event_generator():
         import json
+
+        assistant_chunks = []
+        dify_conversation_id = conversation["dify_conversation_id"]
+        dify_message_id = None
 
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -837,24 +900,63 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
                             raw = line[6:].strip()
 
                             if raw == "[DONE]":
-                                yield "data: [DONE]\n\n"
                                 break
 
                             try:
                                 data = json.loads(raw)
                                 event_type = data.get("event")
 
+                                if data.get("conversation_id"):
+                                    dify_conversation_id = data.get("conversation_id")
+
+                                if data.get("message_id") and not dify_message_id:
+                                    dify_message_id = data.get("message_id")
+
                                 if event_type in ("message", "agent_message"):
                                     answer = data.get("answer", "")
                                     if answer:
+                                        assistant_chunks.append(answer)
                                         yield f"data: {json.dumps({'chunk': answer})}\n\n"
 
                                 elif event_type == "message_end":
-                                    yield "data: [DONE]\n\n"
+                                    if data.get("conversation_id"):
+                                        dify_conversation_id = data.get("conversation_id")
                                     break
 
                             except Exception:
                                 continue
+
+            assistant_text = "".join(assistant_chunks).strip()
+
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE conversations
+                        SET dify_conversation_id = :dify_conversation_id,
+                            updated_at = NOW(),
+                            last_message_at = NOW()
+                        WHERE id = :conversation_id
+                    """),
+                    {
+                        "dify_conversation_id": dify_conversation_id,
+                        "conversation_id": local_conversation_id,
+                    },
+                )
+
+                if assistant_text:
+                    conn.execute(
+                        text("""
+                            INSERT INTO messages (conversation_id, role, content, dify_message_id)
+                            VALUES (:conversation_id, 'assistant', :content, :dify_message_id)
+                        """),
+                        {
+                            "conversation_id": local_conversation_id,
+                            "content": assistant_text,
+                            "dify_message_id": dify_message_id,
+                        },
+                    )
+
+            yield "data: [DONE]\n\n"
 
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 504:
