@@ -670,6 +670,11 @@ def auth_profile(user: dict = Depends(get_verified_user)):
             "usage": {
                 "analyses_used": row["usage_count"] if row["usage_count"] is not None else 0,
                 "analyses_available": row["usage_limit"] if row["usage_limit"] is not None else 0,
+                "analyses_remaining": max(
+                    (row["usage_limit"] if row["usage_limit"] is not None else 0) -
+                    (row["usage_count"] if row["usage_count"] is not None else 0),
+                    0
+                )
             }
         }
 
@@ -959,7 +964,7 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
                         "conversation_id": local_conversation_id,
                     },
                 )
-
+            
                 if assistant_text:
                     conn.execute(
                         text("""
@@ -970,6 +975,18 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
                             "conversation_id": local_conversation_id,
                             "content": assistant_text,
                             "dify_message_id": dify_message_id,
+                        },
+                    )
+            
+                    conn.execute(
+                        text("""
+                            UPDATE subscriptions
+                            SET usage_count = usage_count + 1,
+                                updated_at = NOW()
+                            WHERE user_id = :user_id
+                        """),
+                        {
+                            "user_id": user["user_id"],
                         },
                     )
 
