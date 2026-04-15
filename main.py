@@ -842,7 +842,7 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     
         if usage_limit > 0 and usage_count >= usage_limit:
             raise HTTPException(
-                status_code=403,
+                status_code=402,
                 detail="Hai esaurito le analisi disponibili nel tuo piano"
             )
     
