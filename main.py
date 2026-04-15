@@ -712,7 +712,7 @@ def list_conversations(user: dict = Depends(get_verified_user)):
                     WHERE user_id = :user_id
                       AND is_archived = FALSE
                     ORDER BY last_message_at DESC
-                    LIMIT 20
+                    LIMIT 8
                 """),
                 {"user_id": user["user_id"]},
             )
