@@ -626,33 +626,50 @@ def auth_profile(user: dict = Depends(get_verified_user)):
         with engine.connect() as conn:
             result = conn.execute(
                 text("""
-                    SELECT id, email, created_at, is_verified, verified_at
-                    FROM users
-                    WHERE id = :user_id
+                    SELECT
+                        u.id,
+                        u.email,
+                        u.created_at,
+                        u.is_verified,
+                        u.verified_at,
+                        s.plan_name,
+                        s.subscription_status,
+                        s.usage_limit,
+                        s.usage_count,
+                        s.stripe_customer_id,
+                        s.stripe_subscription_id,
+                        s.current_period_start,
+                        s.current_period_end
+                    FROM users u
+                    LEFT JOIN subscriptions s ON s.user_id = u.id
+                    WHERE u.id = :user_id
                 """),
                 {"user_id": user["user_id"]},
             )
-            db_user = result.mappings().first()
+            row = result.mappings().first()
 
-        if not db_user:
+        if not row:
             raise HTTPException(status_code=404, detail="Utente non trovato")
 
         return {
             "user": {
-                "id": str(db_user["id"]),
-                "email": db_user["email"],
-                "created_at": str(db_user["created_at"]),
-                "is_verified": bool(db_user["is_verified"]),
-                "verified_at": str(db_user["verified_at"]) if db_user["verified_at"] else None,
+                "id": str(row["id"]),
+                "email": row["email"],
+                "created_at": str(row["created_at"]),
+                "is_verified": bool(row["is_verified"]),
+                "verified_at": str(row["verified_at"]) if row["verified_at"] else None,
             },
             "subscription": {
-                "plan_name": "Base",
-                "status": "non attivo",
-                "billing_model": "non ancora configurato"
+                "plan_name": row["plan_name"] or "free",
+                "status": row["subscription_status"] or "inactive",
+                "stripe_customer_id": row["stripe_customer_id"],
+                "stripe_subscription_id": row["stripe_subscription_id"],
+                "current_period_start": str(row["current_period_start"]) if row["current_period_start"] else None,
+                "current_period_end": str(row["current_period_end"]) if row["current_period_end"] else None,
             },
             "usage": {
-                "analyses_used": 0,
-                "analyses_available": "non ancora configurato"
+                "analyses_used": row["usage_count"] if row["usage_count"] is not None else 0,
+                "analyses_available": row["usage_limit"] if row["usage_limit"] is not None else 0,
             }
         }
 
