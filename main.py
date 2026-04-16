@@ -1,6 +1,7 @@
 import os
 import secrets
 import smtplib
+import stripe
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -40,12 +41,19 @@ SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
 MAIL_FROM = os.getenv("MAIL_FROM", SMTP_USER or "synthono@synthono.com")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "https://www.synthono.com")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_START_PRICE_ID = os.getenv("STRIPE_START_PRICE_ID")
+STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID")
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://synthono.com/Test")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL non configurata")
 
 if not SESSION_SECRET:
     raise RuntimeError("SESSION_SECRET non configurata")
+
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 password_hash = PasswordHash.recommended()
@@ -85,6 +93,13 @@ class ChangePasswordRequest (BaseModel):
 
 class CreateConversationRequest (BaseModel):
     title: str = "Nuova conversazione"
+
+class CreateCheckoutSessionRequest (BaseModel):
+    plan: str
+    
+
+def build_frontend_url(path: str) -> str:
+    return f"{FRONTEND_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
 
 def hash_password(password: str) -> str:
     return password_hash.hash(password)
@@ -138,7 +153,7 @@ def send_reset_email(to_email: str, token: str) -> None:
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
         raise RuntimeError("Configurazione SMTP incompleta")
 
-    reset_link = f"{APP_BASE_URL}/Test/reset-password.html?token={token}"
+    reset_link = f"{build_frontend_url('reset-password.html')}?token={token}"
 
     subject = "Reimposta la tua password SynthONO"
 
@@ -186,7 +201,7 @@ def send_verification_email(to_email: str, token: str) -> None:
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
         raise RuntimeError("Configurazione SMTP incompleta")
 
-    verify_link = f"https://synthono.com/Test/verify-email.html?token={token}"
+    verify_link = f"{build_frontend_url('verify-email.html')}?token={token}"
 
     subject = "Verifica il tuo account SynthONO"
 
@@ -816,6 +831,51 @@ def get_conversation_messages(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
+@app.post("/billing/create-checkout-session")
+def create_checkout_session(
+    payload: CreateCheckoutSessionRequest,
+    user: dict = Depends(get_verified_user)
+):
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY non configurata")
+
+    plan = (payload.plan or "").strip().lower()
+
+    price_map = {
+        "start": STRIPE_START_PRICE_ID,
+        "pro": STRIPE_PRO_PRICE_ID,
+    }
+
+    price_id = price_map.get(plan)
+
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Piano non valido")
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            line_items=[
+                {
+                    "price": price_id,
+                    "quantity": 1,
+                }
+            ],
+            customer_email=user["email"],
+            success_url=f"{APP_BASE_URL}/Test/billing-success.html?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{APP_BASE_URL}/Test/billing-cancel.html",
+            metadata={
+                "user_id": user["user_id"],
+                "plan": plan,
+            },
+        )
+
+        return {
+            "checkout_url": session.url
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore creazione checkout Stripe: {str(e)}")
+        
 
 @app.post("/chat")
 async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
