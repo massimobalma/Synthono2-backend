@@ -7,3 +7,4 @@ python-multipart
 itsdangerous
 httpx
 email-validator
+stripe
