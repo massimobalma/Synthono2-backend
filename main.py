@@ -1071,7 +1071,46 @@ async def stripe_webhook(request: Request):
         print("ERRORE WEBHOOK STRIPE:", repr(e))
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Errore webhook Stripe: {str(e)}")
-        
+
+@app.post("/billing/create-portal-session")
+def create_portal_session(user: dict = Depends(get_verified_user)):
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY non configurata")
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT plan_name, stripe_customer_id
+                    FROM subscriptions
+                    WHERE user_id = :user_id
+                """),
+                {"user_id": user["user_id"]},
+            )
+            row = result.mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Abbonamento non trovato")
+
+        plan_name = (row["plan_name"] or "free").lower()
+        stripe_customer_id = row["stripe_customer_id"]
+
+        if plan_name == "free" or not stripe_customer_id:
+            raise HTTPException(status_code=400, detail="Nessun abbonamento attivo da gestire")
+
+        session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id,
+            return_url=f"{APP_BASE_URL}/Test/account.html",
+        )
+
+        return {
+            "portal_url": session.url
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore creazione portale Stripe: {str(e)}")
 
 @app.post("/chat")
 async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
