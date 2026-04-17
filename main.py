@@ -319,6 +319,9 @@ def ts_to_datetime(ts):
         return None
     return datetime.fromtimestamp(ts, timezone.utc)
 
+def stripe_field(obj, key, default=None):
+    return obj[key] if obj and key in obj else default
+
 @app.get("/")
 def root():
     return {"message": "Backend attivo", "status": "ok"}
@@ -925,13 +928,13 @@ async def stripe_webhook(request: Request):
         print("WEBHOOK STRIPE OBJECT:", json.dumps(obj, default=str)[:3000])
 
         if event_type == "checkout.session.completed":
-            if obj["mode"] != "subscription":
+            if stripe_field(obj, "mode") != "subscription":
                 return {"received": True}
-
-            metadata = obj["metadata"] if "metadata" in obj else {}
-            user_id = metadata.get("user_id")
-            customer_id = obj["customer"] if "customer" in obj else None
-            subscription_id = obj["subscription"] if "subscription" in obj else None
+            
+            metadata = stripe_field(obj, "metadata", {})
+            user_id = stripe_field(metadata, "user_id")
+            customer_id = stripe_field(obj, "customer")
+            subscription_id = stripe_field(obj, "subscription")
 
             if user_id and customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
@@ -968,8 +971,8 @@ async def stripe_webhook(request: Request):
 
         elif event_type == "customer.subscription.updated":
             subscription = obj
-            customer_id = subscription["customer"] if "customer" in subscription else None
-            subscription_id = subscription["id"] if "id" in subscription else None
+            customer_id = stripe_field(subscription, "customer")
+            subscription_id = stripe_field(subscription, "id")
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
 
@@ -1001,8 +1004,8 @@ async def stripe_webhook(request: Request):
 
         elif event_type == "customer.subscription.deleted":
             subscription = obj
-            customer_id = subscription["customer"] if "customer" in subscription else None
-            subscription_id = subscription["id"] if "id" in subscription else None
+            customer_id = stripe_field(subscription, "customer")
+            subscription_id = stripe_field(subscription, "id")
 
             with engine.begin() as conn:
                 conn.execute(
@@ -1025,8 +1028,8 @@ async def stripe_webhook(request: Request):
                 )
 
         elif event_type == "invoice.paid":
-            customer_id = obj["customer"] if "customer" in obj else None
-            subscription_id = obj["subscription"] if "subscription" in obj else None
+            customer_id = stripe_field(obj, "customer")
+            subscription_id = stripe_field(obj, "subscription")
 
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
@@ -1055,8 +1058,8 @@ async def stripe_webhook(request: Request):
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(subscription["current_period_start"] if "current_period_start" in subscription else None),
-                            "current_period_end": ts_to_datetime(subscription["current_period_end"] if "current_period_end" in subscription else None),
+                            "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
+                            "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
                         },
                     )
 
