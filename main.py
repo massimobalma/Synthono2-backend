@@ -960,8 +960,8 @@ async def stripe_webhook(request: Request):
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(subscription.get("current_period_start")),
-                            "current_period_end": ts_to_datetime(subscription.get("current_period_end")),
+                            "current_period_start": ts_to_datetime(subscription["current_period_start"] if "current_period_start" in subscription else None),
+                            "current_period_end": ts_to_datetime(subscription["current_period_end"] if "current_period_end" in subscription else None),
                             "user_id": user_id,
                         },
                     )
