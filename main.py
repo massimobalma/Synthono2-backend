@@ -2,6 +2,8 @@ import os
 import secrets
 import smtplib
 import stripe
+import traceback
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -917,6 +919,8 @@ async def stripe_webhook(request: Request):
 
     try:
         event_type = event["type"]
+        print("WEBHOOK STRIPE EVENT:", event_type)
+        print("WEBHOOK STRIPE OBJECT:", json.dumps(obj, default=str)[:3000])
         obj = event["data"]["object"]
 
         if event_type == "checkout.session.completed":
@@ -1059,6 +1063,8 @@ async def stripe_webhook(request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        print("ERRORE WEBHOOK STRIPE:", repr(e))
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Errore webhook Stripe: {str(e)}")
         
 
