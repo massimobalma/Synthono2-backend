@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response, Cookie, Depends
+from fastapi import FastAPI, HTTPException, Response, Cookie, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
@@ -45,6 +45,7 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_START_PRICE_ID = os.getenv("STRIPE_START_PRICE_ID")
 STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID")
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "https://synthono.com/Test")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL non configurata")
@@ -302,6 +303,19 @@ def get_verified_user(user: dict = Depends(get_current_user)) -> dict:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
+
+def get_plan_config_from_price_id(price_id: str) -> tuple[str, int]:
+    if price_id == STRIPE_START_PRICE_ID:
+        return "start", 20
+    if price_id == STRIPE_PRO_PRICE_ID:
+        return "pro", 60
+    return "free", 2
+
+
+def ts_to_datetime(ts):
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts, timezone.utc)
 
 @app.get("/")
 def root():
@@ -875,6 +889,177 @@ def create_checkout_session(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore creazione checkout Stripe: {str(e)}")
+
+@app.post("/billing/webhook")
+async def stripe_webhook(request: Request):
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY non configurata")
+
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="STRIPE_WEBHOOK_SECRET non configurata")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="Stripe-Signature mancante")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=payload,
+            sig_header=sig_header,
+            secret=STRIPE_WEBHOOK_SECRET,
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Payload webhook non valido")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Firma webhook Stripe non valida")
+
+    try:
+        event_type = event["type"]
+        obj = event["data"]["object"]
+
+        if event_type == "checkout.session.completed":
+            if obj.get("mode") != "subscription":
+                return {"received": True}
+
+            user_id = (obj.get("metadata") or {}).get("user_id")
+            customer_id = obj.get("customer")
+            subscription_id = obj.get("subscription")
+
+            if user_id and customer_id and subscription_id:
+                subscription = stripe.Subscription.retrieve(subscription_id)
+
+                price_id = subscription["items"]["data"][0]["price"]["id"]
+                plan_name, usage_limit = get_plan_config_from_price_id(price_id)
+
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            UPDATE subscriptions
+                            SET plan_name = :plan_name,
+                                subscription_status = :subscription_status,
+                                usage_limit = :usage_limit,
+                                usage_count = 0,
+                                stripe_customer_id = :stripe_customer_id,
+                                stripe_subscription_id = :stripe_subscription_id,
+                                current_period_start = :current_period_start,
+                                current_period_end = :current_period_end,
+                                updated_at = NOW()
+                            WHERE user_id = :user_id
+                        """),
+                        {
+                            "plan_name": plan_name,
+                            "subscription_status": subscription["status"],
+                            "usage_limit": usage_limit,
+                            "stripe_customer_id": customer_id,
+                            "stripe_subscription_id": subscription_id,
+                            "current_period_start": ts_to_datetime(subscription.get("current_period_start")),
+                            "current_period_end": ts_to_datetime(subscription.get("current_period_end")),
+                            "user_id": user_id,
+                        },
+                    )
+
+        elif event_type == "customer.subscription.updated":
+            subscription = obj
+            customer_id = subscription.get("customer")
+            subscription_id = subscription.get("id")
+            price_id = subscription["items"]["data"][0]["price"]["id"]
+            plan_name, usage_limit = get_plan_config_from_price_id(price_id)
+
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE subscriptions
+                        SET plan_name = :plan_name,
+                            subscription_status = :subscription_status,
+                            usage_limit = :usage_limit,
+                            stripe_customer_id = :stripe_customer_id,
+                            stripe_subscription_id = :stripe_subscription_id,
+                            current_period_start = :current_period_start,
+                            current_period_end = :current_period_end,
+                            updated_at = NOW()
+                        WHERE stripe_customer_id = :stripe_customer_id
+                           OR stripe_subscription_id = :stripe_subscription_id
+                    """),
+                    {
+                        "plan_name": plan_name,
+                        "subscription_status": subscription["status"],
+                        "usage_limit": usage_limit,
+                        "stripe_customer_id": customer_id,
+                        "stripe_subscription_id": subscription_id,
+                        "current_period_start": ts_to_datetime(subscription.get("current_period_start")),
+                        "current_period_end": ts_to_datetime(subscription.get("current_period_end")),
+                    },
+                )
+
+        elif event_type == "customer.subscription.deleted":
+            subscription = obj
+            customer_id = subscription.get("customer")
+            subscription_id = subscription.get("id")
+
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""
+                        UPDATE subscriptions
+                        SET plan_name = 'free',
+                            subscription_status = 'canceled',
+                            usage_limit = 2,
+                            usage_count = 0,
+                            current_period_start = NULL,
+                            current_period_end = NULL,
+                            updated_at = NOW()
+                        WHERE stripe_customer_id = :stripe_customer_id
+                           OR stripe_subscription_id = :stripe_subscription_id
+                    """),
+                    {
+                        "stripe_customer_id": customer_id,
+                        "stripe_subscription_id": subscription_id,
+                    },
+                )
+
+        elif event_type == "invoice.paid":
+            customer_id = obj.get("customer")
+            subscription_id = obj.get("subscription")
+
+            if customer_id and subscription_id:
+                subscription = stripe.Subscription.retrieve(subscription_id)
+                price_id = subscription["items"]["data"][0]["price"]["id"]
+                plan_name, usage_limit = get_plan_config_from_price_id(price_id)
+
+                with engine.begin() as conn:
+                    conn.execute(
+                        text("""
+                            UPDATE subscriptions
+                            SET plan_name = :plan_name,
+                                subscription_status = :subscription_status,
+                                usage_limit = :usage_limit,
+                                usage_count = 0,
+                                stripe_customer_id = :stripe_customer_id,
+                                stripe_subscription_id = :stripe_subscription_id,
+                                current_period_start = :current_period_start,
+                                current_period_end = :current_period_end,
+                                updated_at = NOW()
+                            WHERE stripe_customer_id = :stripe_customer_id
+                               OR stripe_subscription_id = :stripe_subscription_id
+                        """),
+                        {
+                            "plan_name": plan_name,
+                            "subscription_status": subscription["status"],
+                            "usage_limit": usage_limit,
+                            "stripe_customer_id": customer_id,
+                            "stripe_subscription_id": subscription_id,
+                            "current_period_start": ts_to_datetime(subscription.get("current_period_start")),
+                            "current_period_end": ts_to_datetime(subscription.get("current_period_end")),
+                        },
+                    )
+
+        return {"received": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore webhook Stripe: {str(e)}")
         
 
 @app.post("/chat")
