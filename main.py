@@ -919,9 +919,10 @@ async def stripe_webhook(request: Request):
 
     try:
         event_type = event["type"]
+        obj = event["data"]["object"]
+        
         print("WEBHOOK STRIPE EVENT:", event_type)
         print("WEBHOOK STRIPE OBJECT:", json.dumps(obj, default=str)[:3000])
-        obj = event["data"]["object"]
 
         if event_type == "checkout.session.completed":
             if obj.get("mode") != "subscription":
