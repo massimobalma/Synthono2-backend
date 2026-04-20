@@ -976,6 +976,11 @@ async def stripe_webhook(request: Request):
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
 
+            cancel_at_period_end = stripe_field(subscription, "cancel_at_period_end", False)
+            subscription_status = stripe_field(subscription, "status", "unknown")
+            if cancel_at_period_end:
+                subscription_status = "cancel_at_period_end"
+
             with engine.begin() as conn:
                 conn.execute(
                     text("""
@@ -993,12 +998,12 @@ async def stripe_webhook(request: Request):
                     """),
                     {
                         "plan_name": plan_name,
-                        "subscription_status": subscription["status"],
+                        "subscription_status": subscription_status,
                         "usage_limit": usage_limit,
                         "stripe_customer_id": customer_id,
                         "stripe_subscription_id": subscription_id,
-                        "current_period_start": ts_to_datetime(subscription["current_period_start"] if "current_period_start" in subscription else None),
-                        "current_period_end": ts_to_datetime(subscription["current_period_end"] if "current_period_end" in subscription else None),
+                        "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
+                        "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
                     },
                 )
 
