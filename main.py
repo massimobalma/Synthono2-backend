@@ -956,7 +956,7 @@ async def stripe_webhook(request: Request):
                         text("""
                             UPDATE subscriptions
                             SET plan_name = :plan_name,
-                                subscription_status = :get_effective_subscription_status(subscription),
+                                subscription_status = :subscription_status,
                                 usage_limit = :usage_limit,
                                 usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
@@ -968,7 +968,7 @@ async def stripe_webhook(request: Request):
                         """),
                         {
                             "plan_name": plan_name,
-                            "subscription_status": subscription["status"],
+                            "subscription_status": get_effective_subscription_status(subscription),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
