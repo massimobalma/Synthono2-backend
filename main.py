@@ -313,7 +313,6 @@ def get_plan_config_from_price_id(price_id: str) -> tuple[str, int]:
         return "pro", 60
     return "free", 2
 
-
 def ts_to_datetime(ts):
     if not ts:
         return None
@@ -330,6 +329,23 @@ def get_effective_subscription_status(subscription) -> str:
         return "cancel_at_period_end"
 
     return status
+
+def get_subscription_period(subscription):
+    period_start = stripe_field(subscription, "current_period_start")
+    period_end = stripe_field(subscription, "current_period_end")
+
+    if period_start and period_end:
+        return period_start, period_end
+
+    items = stripe_field(subscription, "items", {})
+    data = stripe_field(items, "data", [])
+
+    if data and len(data) > 0:
+        first_item = data[0]
+        period_start = stripe_field(first_item, "current_period_start")
+        period_end = stripe_field(first_item, "current_period_end")
+
+    return period_start, period_end
 
 @app.get("/")
 def root():
@@ -947,6 +963,7 @@ async def stripe_webhook(request: Request):
 
             if user_id and customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
+                period_start, period_end = get_subscription_period(subscription)
 
                 price_id = subscription["items"]["data"][0]["price"]["id"]
                 plan_name, usage_limit = get_plan_config_from_price_id(price_id)
@@ -972,14 +989,15 @@ async def stripe_webhook(request: Request):
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(subscription["current_period_start"] if "current_period_start" in subscription else None),
-                            "current_period_end": ts_to_datetime(subscription["current_period_end"] if "current_period_end" in subscription else None),
+                            "current_period_start": ts_to_datetime(period_start),
+                            "current_period_end": ts_to_datetime(period_end),
                             "user_id": user_id,
                         },
                     )
 
         elif event_type == "customer.subscription.updated":
             subscription = obj
+            period_start, period_end = get_subscription_period(subscription)
             customer_id = stripe_field(subscription, "customer")
             subscription_id = stripe_field(subscription, "id")
             price_id = subscription["items"]["data"][0]["price"]["id"]
@@ -1008,13 +1026,14 @@ async def stripe_webhook(request: Request):
                         "usage_limit": usage_limit,
                         "stripe_customer_id": customer_id,
                         "stripe_subscription_id": subscription_id,
-                        "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
-                        "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
+                        "current_period_start": ts_to_datetime(period_start),
+                        "current_period_end": ts_to_datetime(period_end),
                     },
                 )
 
         elif event_type == "customer.subscription.deleted":
             subscription = obj
+            period_start, period_end = get_subscription_period(subscription)
             customer_id = stripe_field(subscription, "customer")
             subscription_id = stripe_field(subscription, "id")
 
@@ -1044,6 +1063,7 @@ async def stripe_webhook(request: Request):
 
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
+                period_start, period_end = get_subscription_period(subscription)
                 price_id = subscription["items"]["data"][0]["price"]["id"]
                 plan_name, usage_limit = get_plan_config_from_price_id(price_id)
 
@@ -1069,8 +1089,8 @@ async def stripe_webhook(request: Request):
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
-                            "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
+                            "current_period_start": ts_to_datetime(period_start),
+                            "current_period_end": ts_to_datetime(period_end),
                         },
                     )
 
