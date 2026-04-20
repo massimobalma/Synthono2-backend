@@ -321,6 +321,15 @@ def ts_to_datetime(ts):
 
 def stripe_field(obj, key, default=None):
     return obj[key] if obj and key in obj else default
+    
+def get_effective_subscription_status(subscription) -> str:
+    status = stripe_field(subscription, "status", "unknown")
+    cancel_at_period_end = stripe_field(subscription, "cancel_at_period_end", False)
+
+    if cancel_at_period_end:
+        return "cancel_at_period_end"
+
+    return status
 
 @app.get("/")
 def root():
@@ -947,7 +956,7 @@ async def stripe_webhook(request: Request):
                         text("""
                             UPDATE subscriptions
                             SET plan_name = :plan_name,
-                                subscription_status = :subscription_status,
+                                subscription_status = :get_effective_subscription_status(subscription),
                                 usage_limit = :usage_limit,
                                 usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
@@ -976,10 +985,7 @@ async def stripe_webhook(request: Request):
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
 
-            cancel_at_period_end = stripe_field(subscription, "cancel_at_period_end", False)
-            subscription_status = stripe_field(subscription, "status", "unknown")
-            if cancel_at_period_end:
-                subscription_status = "cancel_at_period_end"
+            subscription_status = get_effective_subscription_status(subscription)
 
             with engine.begin() as conn:
                 conn.execute(
@@ -1059,7 +1065,7 @@ async def stripe_webhook(request: Request):
                         """),
                         {
                             "plan_name": plan_name,
-                            "subscription_status": subscription["status"],
+                            "subscription_status": get_effective_subscription_status(subscription),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
