@@ -698,7 +698,9 @@ def auth_profile(user: dict = Depends(get_verified_user)):
                         s.stripe_customer_id,
                         s.stripe_subscription_id,
                         s.current_period_start,
-                        s.current_period_end
+                        s.current_period_end,
+                        s.cancel_at_period_end
+                        
                     FROM users u
                     LEFT JOIN subscriptions s ON s.user_id = u.id
                     WHERE u.id = :user_id
@@ -721,10 +723,11 @@ def auth_profile(user: dict = Depends(get_verified_user)):
             "subscription": {
                 "plan_name": row["plan_name"] or "free",
                 "status": row["subscription_status"] or "inactive",
+                "cancel_at_period_end": bool(row["cancel_at_period_end"]) if row["cancel_at_period_end"] is not None else False,
                 "stripe_customer_id": row["stripe_customer_id"],
                 "stripe_subscription_id": row["stripe_subscription_id"],
                 "current_period_start": str(row["current_period_start"]) if row["current_period_start"] else None,
-                "current_period_end": str(row["current_period_end"]) if row["current_period_end"] else None,
+                "current_period_end": str(row["current_period_end"]) if row["current_period_end"] else None
             },
             "usage": {
                 "analyses_used": row["usage_count"] if row["usage_count"] is not None else 0,
@@ -974,6 +977,7 @@ async def stripe_webhook(request: Request):
                             UPDATE subscriptions
                             SET plan_name = :plan_name,
                                 subscription_status = :subscription_status,
+                                cancel_at_period_end = :cancel_at_period_end,
                                 usage_limit = :usage_limit,
                                 usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
@@ -985,25 +989,23 @@ async def stripe_webhook(request: Request):
                         """),
                         {
                             "plan_name": plan_name,
-                            "subscription_status": get_effective_subscription_status(subscription),
+                            "subscription_status": stripe_field(subscription, "status", "unknown"),
+                            "cancel_at_period_end": stripe_field(subscription, "cancel_at_period_end", False),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(period_start),
-                            "current_period_end": ts_to_datetime(period_end),
+                            "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
+                            "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
                             "user_id": user_id,
                         },
                     )
 
         elif event_type == "customer.subscription.updated":
             subscription = obj
-            period_start, period_end = get_subscription_period(subscription)
             customer_id = stripe_field(subscription, "customer")
             subscription_id = stripe_field(subscription, "id")
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
-
-            subscription_status = get_effective_subscription_status(subscription)
 
             with engine.begin() as conn:
                 conn.execute(
@@ -1011,6 +1013,7 @@ async def stripe_webhook(request: Request):
                         UPDATE subscriptions
                         SET plan_name = :plan_name,
                             subscription_status = :subscription_status,
+                            cancel_at_period_end = :cancel_at_period_end,
                             usage_limit = :usage_limit,
                             stripe_customer_id = :stripe_customer_id,
                             stripe_subscription_id = :stripe_subscription_id,
@@ -1022,18 +1025,18 @@ async def stripe_webhook(request: Request):
                     """),
                     {
                         "plan_name": plan_name,
-                        "subscription_status": subscription_status,
+                        "subscription_status": stripe_field(subscription, "status", "unknown"),
+                        "cancel_at_period_end": stripe_field(subscription, "cancel_at_period_end", False),
                         "usage_limit": usage_limit,
                         "stripe_customer_id": customer_id,
                         "stripe_subscription_id": subscription_id,
-                        "current_period_start": ts_to_datetime(period_start),
-                        "current_period_end": ts_to_datetime(period_end),
+                        "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
+                        "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
                     },
                 )
 
         elif event_type == "customer.subscription.deleted":
             subscription = obj
-            period_start, period_end = get_subscription_period(subscription)
             customer_id = stripe_field(subscription, "customer")
             subscription_id = stripe_field(subscription, "id")
 
@@ -1043,6 +1046,7 @@ async def stripe_webhook(request: Request):
                         UPDATE subscriptions
                         SET plan_name = 'free',
                             subscription_status = 'canceled',
+                            cancel_at_period_end = FALSE,
                             usage_limit = 2,
                             usage_count = 0,
                             current_period_start = NULL,
@@ -1073,6 +1077,7 @@ async def stripe_webhook(request: Request):
                             UPDATE subscriptions
                             SET plan_name = :plan_name,
                                 subscription_status = :subscription_status,
+                                cancel_at_period_end = :cancel_at_period_end,
                                 usage_limit = :usage_limit,
                                 usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
@@ -1085,12 +1090,13 @@ async def stripe_webhook(request: Request):
                         """),
                         {
                             "plan_name": plan_name,
-                            "subscription_status": get_effective_subscription_status(subscription),
+                            "subscription_status": stripe_field(subscription, "status", "unknown"),
+                            "cancel_at_period_emd": stripe_field(subscription, "cancel_at_period_end", False),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(period_start),
-                            "current_period_end": ts_to_datetime(period_end),
+                            "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
+                            "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
                         },
                     )
 
