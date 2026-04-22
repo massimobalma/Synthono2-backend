@@ -1006,7 +1006,7 @@ async def stripe_webhook(request: Request):
             subscription_id = stripe_field(subscription, "id")
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
-            period_start, period_end = get_subscription_period(sunscription)
+            period_start, period_end = get_subscription_period(subscription)
 
             with engine.begin() as conn:
                 conn.execute(
