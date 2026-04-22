@@ -320,6 +320,13 @@ def ts_to_datetime(ts):
 
 def stripe_field(obj, key, default=None):
     return obj[key] if obj and key in obj else default
+
+def is_subscription_canceling_at_period_end(subscription) -> bool:
+    cancel_at_period_end = stripe_field(subscription, "cancel_at_period_end", False)
+    cancel_at = stripe_field(subscription, "cancel_at")
+    status = stripe_field(subscription, "status", "")
+
+    return bool(cancel_at_period_end or (status == "active" and cancel_at))
     
 def get_effective_subscription_status(subscription) -> str:
     status = stripe_field(subscription, "status", "unknown")
@@ -334,16 +341,17 @@ def get_subscription_period(subscription):
     period_start = stripe_field(subscription, "current_period_start")
     period_end = stripe_field(subscription, "current_period_end")
 
-    if period_start and period_end:
-        return period_start, period_end
-
     items = stripe_field(subscription, "items", {})
     data = stripe_field(items, "data", [])
 
-    if data and len(data) > 0:
+    if (not period_start or not period_end) and data and len(data) > 0:
         first_item = data[0]
-        period_start = stripe_field(first_item, "current_period_start")
-        period_end = stripe_field(first_item, "current_period_end")
+        period_start = period_start or stripe_field(first_item, "current_period_start")
+        period_end = period_end or stripe_field(first_item, "current_period_end")
+
+    cancel_at = stripe_field(subscription, "cancel_at")
+    if cancel_at:
+        period_end = cancel_at
 
     return period_start, period_end
 
@@ -990,7 +998,7 @@ async def stripe_webhook(request: Request):
                         {
                             "plan_name": plan_name,
                             "subscription_status": stripe_field(subscription, "status", "unknown"),
-                            "cancel_at_period_end": stripe_field(subscription, "cancel_at_period_end", False),
+                            "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
@@ -1027,7 +1035,7 @@ async def stripe_webhook(request: Request):
                     {
                         "plan_name": plan_name,
                         "subscription_status": stripe_field(subscription, "status", "unknown"),
-                        "cancel_at_period_end": stripe_field(subscription, "cancel_at_period_end", False),
+                        "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
                         "usage_limit": usage_limit,
                         "stripe_customer_id": customer_id,
                         "stripe_subscription_id": subscription_id,
@@ -1092,7 +1100,7 @@ async def stripe_webhook(request: Request):
                         {
                             "plan_name": plan_name,
                             "subscription_status": stripe_field(subscription, "status", "unknown"),
-                            "cancel_at_period_end": stripe_field(subscription, "cancel_at_period_end", False),
+                            "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
