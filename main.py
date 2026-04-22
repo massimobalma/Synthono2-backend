@@ -994,8 +994,8 @@ async def stripe_webhook(request: Request):
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
-                            "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
+                            "current_period_start": ts_to_datetime(period_start),
+                            "current_period_end": ts_to_datetime(period_end),
                             "user_id": user_id,
                         },
                     )
@@ -1006,6 +1006,7 @@ async def stripe_webhook(request: Request):
             subscription_id = stripe_field(subscription, "id")
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
+            period_start, period_end = get_subscription_period(sunscription)
 
             with engine.begin() as conn:
                 conn.execute(
@@ -1030,8 +1031,8 @@ async def stripe_webhook(request: Request):
                         "usage_limit": usage_limit,
                         "stripe_customer_id": customer_id,
                         "stripe_subscription_id": subscription_id,
-                        "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
-                        "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
+                        "current_period_start": ts_to_datetime(period_start),
+                        "current_period_end": ts_to_datetime(period_end),
                     },
                 )
 
@@ -1091,12 +1092,12 @@ async def stripe_webhook(request: Request):
                         {
                             "plan_name": plan_name,
                             "subscription_status": stripe_field(subscription, "status", "unknown"),
-                            "cancel_at_period_emd": stripe_field(subscription, "cancel_at_period_end", False),
+                            "cancel_at_period_end": stripe_field(subscription, "cancel_at_period_end", False),
                             "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(stripe_field(subscription, "current_period_start")),
-                            "current_period_end": ts_to_datetime(stripe_field(subscription, "current_period_end")),
+                            "current_period_start": ts_to_datetime(period_start),
+                            "current_period_end": ts_to_datetime(period_end),
                         },
                     )
 
