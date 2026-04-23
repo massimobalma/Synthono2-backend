@@ -355,6 +355,67 @@ def get_subscription_period(subscription):
 
     return period_start, period_end
 
+def add_purchased_credits_to_remaining(
+    customer_id: str,
+    subscription_id: str,
+    plan_name: str,
+    purchased_credits: int,
+    subscription,
+):
+    period_start, period_end = get_subscription_period(subscription)
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("""
+                SELECT user_id, usage_limit, usage_count
+                FROM subscriptions
+                WHERE stripe_customer_id = :stripe_customer_id
+                   OR stripe_subscription_id = :stripe_subscription_id
+                FOR UPDATE
+            """),
+            {
+                "stripe_customer_id": customer_id,
+                "stripe_subscription_id": subscription_id,
+            },
+        ).mappings().first()
+
+        if not row:
+            return
+
+        current_limit = row["usage_limit"] or 0
+        current_count = row["usage_count"] or 0
+        remaining = max(current_limit - current_count, 0)
+
+        new_usage_limit = remaining + purchased_credits
+
+        conn.execute(
+            text("""
+                UPDATE subscriptions
+                SET plan_name = :plan_name,
+                    subscription_status = :subscription_status,
+                    cancel_at_period_end = :cancel_at_period_end,
+                    usage_limit = :usage_limit,
+                    usage_count = 0,
+                    stripe_customer_id = :stripe_customer_id,
+                    stripe_subscription_id = :stripe_subscription_id,
+                    current_period_start = :current_period_start,
+                    current_period_end = :current_period_end,
+                    updated_at = NOW()
+                WHERE user_id = :user_id
+            """),
+            {
+                "plan_name": plan_name,
+                "subscription_status": stripe_field(subscription, "status", "unknown"),
+                "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
+                "usage_limit": new_usage_limit,
+                "stripe_customer_id": customer_id,
+                "stripe_subscription_id": subscription_id,
+                "current_period_start": ts_to_datetime(period_start),
+                "current_period_end": ts_to_datetime(period_end),
+                "user_id": row["user_id"],
+            },
+        )
+
 @app.get("/")
 def root():
     return {"message": "Backend attivo", "status": "ok"}
@@ -986,8 +1047,6 @@ async def stripe_webhook(request: Request):
                             SET plan_name = :plan_name,
                                 subscription_status = :subscription_status,
                                 cancel_at_period_end = :cancel_at_period_end,
-                                usage_limit = :usage_limit,
-                                usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
                                 stripe_subscription_id = :stripe_subscription_id,
                                 current_period_start = :current_period_start,
@@ -1023,7 +1082,6 @@ async def stripe_webhook(request: Request):
                         SET plan_name = :plan_name,
                             subscription_status = :subscription_status,
                             cancel_at_period_end = :cancel_at_period_end,
-                            usage_limit = :usage_limit,
                             stripe_customer_id = :stripe_customer_id,
                             stripe_subscription_id = :stripe_subscription_id,
                             current_period_start = :current_period_start,
@@ -1036,7 +1094,6 @@ async def stripe_webhook(request: Request):
                         "plan_name": plan_name,
                         "subscription_status": stripe_field(subscription, "status", "unknown"),
                         "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
-                        "usage_limit": usage_limit,
                         "stripe_customer_id": customer_id,
                         "stripe_subscription_id": subscription_id,
                         "current_period_start": ts_to_datetime(period_start),
@@ -1076,9 +1133,16 @@ async def stripe_webhook(request: Request):
 
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
-                period_start, period_end = get_subscription_period(subscription)
                 price_id = subscription["items"]["data"][0]["price"]["id"]
                 plan_name, usage_limit = get_plan_config_from_price_id(price_id)
+
+                add_purchased_credits_to_remaining(
+                    customer_id=customer_id,
+                    subscription_id=subscription_id,
+                    plan_name=plan_name,
+                    purchased_credits=purchased_credits,
+                    subscription=subscription,
+                )
 
                 with engine.begin() as conn:
                     conn.execute(
