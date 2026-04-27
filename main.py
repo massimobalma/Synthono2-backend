@@ -319,7 +319,14 @@ def ts_to_datetime(ts):
     return datetime.fromtimestamp(ts, timezone.utc)
 
 def stripe_field(obj, key, default=None):
-    return obj[key] if obj and key in obj else default
+    try:
+        if obj is None:
+            return default
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return obj[key] if key in obj else getattr(obj, key, default)
+    except Exception:
+        return default
 
 def is_subscription_canceling_at_period_end(subscription) -> bool:
     cancel_at_period_end = stripe_field(subscription, "cancel_at_period_end", False)
@@ -1130,12 +1137,12 @@ async def stripe_webhook(request: Request):
         elif event_type == "invoice.paid":
             customer_id = stripe_field(obj, "customer")
             subscription_id = stripe_field(obj, "subscription")
-
+        
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
                 price_id = subscription["items"]["data"][0]["price"]["id"]
-                plan_name, usage_limit = get_plan_config_from_price_id(price_id)
-
+                plan_name, purchased_credits = get_plan_config_from_price_id(price_id)
+        
                 add_purchased_credits_to_remaining(
                     customer_id=customer_id,
                     subscription_id=subscription_id,
@@ -1221,6 +1228,102 @@ def create_portal_session(user: dict = Depends(get_verified_user)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore creazione portale Stripe: {str(e)}")
+
+@app.post("/billing/upgrade-to-pro")
+def upgrade_to_pro(user: dict = Depends(get_verified_user)):
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY non configurata")
+
+    if not STRIPE_PRO_PRICE_ID:
+        raise HTTPException(status_code=500, detail="STRIPE_PRO_PRICE_ID non configurata")
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT
+                        plan_name,
+                        subscription_status,
+                        stripe_customer_id,
+                        stripe_subscription_id,
+                        cancel_at_period_end
+                    FROM subscriptions
+                    WHERE user_id = :user_id
+                """),
+                {"user_id": user["user_id"]},
+            )
+            row = result.mappings().first()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Abbonamento non trovato")
+
+        plan_name = (row["plan_name"] or "free").lower()
+        stripe_subscription_id = row["stripe_subscription_id"]
+        cancel_at_period_end = bool(row["cancel_at_period_end"]) if row["cancel_at_period_end"] is not None else False
+
+        if plan_name == "pro":
+            return {"ok": True, "message": "Sei già sul piano Pro"}
+
+        if plan_name != "start":
+            raise HTTPException(
+                status_code=400,
+                detail="L'upgrade a Pro è disponibile solo per utenti con piano Start"
+            )
+
+        if not stripe_subscription_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Subscription Stripe non trovata"
+            )
+
+        if cancel_at_period_end:
+            raise HTTPException(
+                status_code=409,
+                detail="L'abbonamento è impostato per la cancellazione a fine periodo. Riattivalo prima dell'upgrade."
+            )
+
+        subscription = stripe.Subscription.retrieve(stripe_subscription_id)
+        items = subscription["items"]["data"]
+
+        if not items:
+            raise HTTPException(
+                status_code=400,
+                detail="Nessun subscription item trovato su Stripe"
+            )
+
+        current_item = items[0]
+        subscription_item_id = current_item["id"]
+        current_quantity = current_item.get("quantity", 1) or 1
+
+        updated_subscription = stripe.Subscription.modify(
+            stripe_subscription_id,
+            items=[
+                {
+                    "id": subscription_item_id,
+                    "price": STRIPE_PRO_PRICE_ID,
+                    "quantity": current_quantity,
+                }
+            ],
+            proration_behavior="always_invoice",
+            payment_behavior="allow_incomplete",
+            metadata={
+                "requested_by": "app_upgrade_to_pro"
+            }
+        )
+
+        return {
+            "ok": True,
+            "message": "Upgrade a Pro richiesto",
+            "stripe_subscription_id": updated_subscription["id"],
+            "stripe_status": updated_subscription["status"],
+        }
+
+    except HTTPException:
+        raise
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=f"Errore Stripe: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.post("/chat")
 async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
