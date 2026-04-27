@@ -1175,36 +1175,6 @@ async def stripe_webhook(request: Request):
                     purchased_credits=purchased_credits,
                     subscription=subscription,
                 )
-
-                with engine.begin() as conn:
-                    conn.execute(
-                        text("""
-                            UPDATE subscriptions
-                            SET plan_name = :plan_name,
-                                subscription_status = :subscription_status,
-                                cancel_at_period_end = :cancel_at_period_end,
-                                usage_limit = :usage_limit,
-                                usage_count = 0,
-                                stripe_customer_id = :stripe_customer_id,
-                                stripe_subscription_id = :stripe_subscription_id,
-                                current_period_start = :current_period_start,
-                                current_period_end = :current_period_end,
-                                updated_at = NOW()
-                            WHERE stripe_customer_id = :stripe_customer_id
-                               OR stripe_subscription_id = :stripe_subscription_id
-                        """),
-                        {
-                            "plan_name": plan_name,
-                            "subscription_status": stripe_field(subscription, "status", "unknown"),
-                            "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
-                            "usage_limit": usage_limit,
-                            "stripe_customer_id": customer_id,
-                            "stripe_subscription_id": subscription_id,
-                            "current_period_start": ts_to_datetime(period_start),
-                            "current_period_end": ts_to_datetime(period_end),
-                        },
-                    )
-
         return {"received": True}
 
     except HTTPException:
