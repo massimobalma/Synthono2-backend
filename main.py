@@ -1460,135 +1460,165 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     timeout = httpx.Timeout(connect=20.0, read=180.0, write=30.0, pool=30.0)
 
     async def event_generator():
-        import json
+    import json
 
-        assistant_chunks = []
-        dify_conversation_id = conversation["dify_conversation_id"]
-        dify_message_id = None
+    assistant_chunks = []
+    dify_conversation_id = conversation["dify_conversation_id"]
+    dify_message_id = None
 
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                async with client.stream(
-                    "POST",
-                    f"{DIFY_BASE_URL}/chat-messages",
-                    json=payload,
-                    headers=headers
-                ) as resp:
-                    resp.raise_for_status()
+    def save_assistant_response():
+        assistant_text = "".join(assistant_chunks).strip()
 
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    UPDATE conversations
+                    SET dify_conversation_id = :dify_conversation_id,
+                        updated_at = NOW(),
+                        last_message_at = NOW()
+                    WHERE id = :conversation_id
+                """),
+                {
+                    "dify_conversation_id": dify_conversation_id,
+                    "conversation_id": local_conversation_id,
+                },
+            )
 
-                        if line.startswith("data: "):
-                            raw = line[6:].strip()
-
-                            if raw == "[DONE]":
-                                break
-
-                            try:
-                                data = json.loads(raw)
-                                event_type = data.get("event")
-
-                                if data.get("conversation_id"):
-                                    dify_conversation_id = data.get("conversation_id")
-
-                                if data.get("message_id") and not dify_message_id:
-                                    dify_message_id = data.get("message_id")
-
-                                if event_type in ("message", "agent_message"):
-                                    answer = data.get("answer", "")
-                                    if answer:
-                                        assistant_chunks.append(answer)
-                                        yield f"data: {json.dumps({'chunk': answer})}\n\n"
-
-                                elif event_type == "message_end":
-                                    if data.get("conversation_id"):
-                                        dify_conversation_id = data.get("conversation_id")
-                                    break
-
-                            except Exception:
-                                continue
-
-            assistant_text = "".join(assistant_chunks).strip()
-
-            with engine.begin() as conn:
+            if assistant_text:
                 conn.execute(
                     text("""
-                        UPDATE conversations
-                        SET dify_conversation_id = :dify_conversation_id,
-                            updated_at = NOW(),
-                            last_message_at = NOW()
-                        WHERE id = :conversation_id
+                        INSERT INTO messages (conversation_id, role, content, dify_message_id)
+                        VALUES (:conversation_id, 'assistant', :content, :dify_message_id)
                     """),
                     {
-                        "dify_conversation_id": dify_conversation_id,
                         "conversation_id": local_conversation_id,
+                        "content": assistant_text,
+                        "dify_message_id": dify_message_id,
                     },
                 )
-            
-                if assistant_text:
-                    conn.execute(
-                        text("""
-                            INSERT INTO messages (conversation_id, role, content, dify_message_id)
-                            VALUES (:conversation_id, 'assistant', :content, :dify_message_id)
-                        """),
-                        {
-                            "conversation_id": local_conversation_id,
-                            "content": assistant_text,
-                            "dify_message_id": dify_message_id,
-                        },
-                    )
-            
-                    conn.execute(
-                        text("""
-                            UPDATE subscriptions
-                            SET usage_count = usage_count + 1,
-                                updated_at = NOW()
-                            WHERE user_id = :user_id
-                        """),
-                        {
-                            "user_id": user["user_id"],
-                        },
-                    )
 
+                conn.execute(
+                    text("""
+                        UPDATE subscriptions
+                        SET usage_count = usage_count + 1,
+                            updated_at = NOW()
+                        WHERE user_id = :user_id
+                    """),
+                    {
+                        "user_id": user["user_id"],
+                    },
+                )
+
+        return assistant_text
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{DIFY_BASE_URL}/chat-messages",
+                json=payload,
+                headers=headers
+            ) as resp:
+                resp.raise_for_status()
+
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+
+                    if not line.startswith("data: "):
+                        continue
+
+                    raw = line[6:].strip()
+
+                    if raw == "[DONE]":
+                        break
+
+                    try:
+                        data = json.loads(raw)
+                        event_type = data.get("event")
+
+                        if data.get("conversation_id"):
+                            dify_conversation_id = data.get("conversation_id")
+
+                        if data.get("message_id") and not dify_message_id:
+                            dify_message_id = data.get("message_id")
+
+                        if event_type in ("message", "agent_message"):
+                            answer = data.get("answer", "")
+                            if answer:
+                                assistant_chunks.append(answer)
+                                yield f"data: {json.dumps({'chunk': answer})}\n\n"
+
+                        elif event_type == "message_end":
+                            if data.get("conversation_id"):
+                                dify_conversation_id = data.get("conversation_id")
+                            break
+
+                    except Exception:
+                        continue
+
+        save_assistant_response()
+        yield "data: [DONE]\n\n"
+
+    except httpx.HTTPStatusError as e:
+        print("DIFY HTTP STATUS ERROR:", e.response.status_code, repr(e))
+        traceback.print_exc()
+
+        if e.response.status_code == 504:
+            yield f"data: {json.dumps({'error': 'L’assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo.'})}\n\n"
             yield "data: [DONE]\n\n"
+            return
 
-        except httpx.HTTPStatusError as e:
-            print("DIFY HTTP STATUS ERROR:", e.response.status_code, repr(e))
-            traceback.print_exc()
+        yield f"data: {json.dumps({'error': f'Dify API status error: {e.response.status_code}'})}\n\n"
+        yield "data: [DONE]\n\n"
 
-            if e.response.status_code == 504:
-                yield f"data: {json.dumps({'error': 'L’assistente sta impiegando più tempo del previsto. Riprova tra qualche secondo.'})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
+    except httpx.RemoteProtocolError as e:
+        print("DIFY REMOTE PROTOCOL ERROR:", repr(e))
+        traceback.print_exc()
 
-            yield f"data: {json.dumps({'error': f'Dify API status error: {e.response.status_code}'})}\n\n"
+        if assistant_chunks:
+            save_assistant_response()
             yield "data: [DONE]\n\n"
+            return
 
-        except httpx.ReadTimeout as e:
-            print("DIFY READ TIMEOUT:", repr(e))
-            traceback.print_exc()
-            yield f"data: {json.dumps({'error': 'Il motore AI sta impiegando troppo tempo a rispondere.'})}\n\n"
-            yield "data: [DONE]\n\n"
+        yield f"data: {json.dumps({'error': 'La connessione con il motore AI si è interrotta prima del completamento della risposta.'})}\n\n"
+        yield "data: [DONE]\n\n"
 
-        except httpx.ConnectTimeout as e:
-            print("DIFY CONNECT TIMEOUT:", repr(e))
-            traceback.print_exc()
-            yield f"data: {json.dumps({'error': 'Timeout di connessione verso il motore AI.'})}\n\n"
-            yield "data: [DONE]\n\n"
+    except httpx.ReadTimeout as e:
+        print("DIFY READ TIMEOUT:", repr(e))
+        traceback.print_exc()
 
-        except httpx.RequestError as e:
-            print("ERRORE HTTPX VERSO DIFY:", repr(e))
-            traceback.print_exc()
-            yield f"data: {json.dumps({'error': 'Errore di comunicazione con il motore AI.'})}\n\n"
+        if assistant_chunks:
+            save_assistant_response()
             yield "data: [DONE]\n\n"
+            return
 
-        except Exception as e:
-            print("ERRORE INTERNO CHAT:", repr(e))
-            traceback.print_exc()
-            yield f"data: {json.dumps({'error': f'Errore interno: {str(e)}'})}\n\n"
+        yield f"data: {json.dumps({'error': 'Il motore AI sta impiegando troppo tempo a rispondere.'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    except httpx.ConnectTimeout as e:
+        print("DIFY CONNECT TIMEOUT:", repr(e))
+        traceback.print_exc()
+        yield f"data: {json.dumps({'error': 'Timeout di connessione verso il motore AI.'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    except httpx.RequestError as e:
+        print("ERRORE HTTPX VERSO DIFY:", repr(e))
+        traceback.print_exc()
+
+        if assistant_chunks:
+            save_assistant_response()
             yield "data: [DONE]\n\n"
+            return
+
+        yield f"data: {json.dumps({'error': 'Errore di comunicazione con il motore AI.'})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        print("ERRORE INTERNO CHAT:", repr(e))
+        traceback.print_exc()
+        yield f"data: {json.dumps({'error': f'Errore interno: {str(e)}'})}\n\n"
+        yield "data: [DONE]\n\n"
             
     return StreamingResponse(
         event_generator(),
