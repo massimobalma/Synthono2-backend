@@ -1315,9 +1315,15 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
             )
 
         current_item = items[0]
-        subscription_item_id = current_item["id"]
-        current_quantity = current_item.get("quantity", 1) or 1
+        subscription_item_id = stripe_field(current_item, "id")
+        current_quantity = stripe_field(current_item, "quantity", 1) or 1
 
+        if not subscription_item_id:
+            raise HTTPException(
+                status_code = 400,
+                detail="Subscription item Stripe non valido"
+            )
+            
         updated_subscription = stripe.Subscription.modify(
             stripe_subscription_id,
             items=[
@@ -1346,6 +1352,8 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=400, detail=f"Errore Stripe: {str(e)}")
     except Exception as e:
+        print ("ERRORE UPGRADE TO PRO:" repr(e))
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.post("/chat")
