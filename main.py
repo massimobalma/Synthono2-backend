@@ -462,6 +462,31 @@ def signup(payload: SignupRequest, response: Response):
                 {"email": email, "password_hash": password_hash},
             )
             user = result.mappings().first()
+    
+            conn.execute(
+                text("""
+                    INSERT INTO subscriptions (
+                        user_id,
+                        plan_name,
+                        subscription_status,
+                        usage_limit,
+                        usage_count,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (
+                        :user_id,
+                        'free',
+                        'inactive',
+                        2,
+                        0,
+                        NOW(),
+                        NOW()
+                    )
+                """),
+                {"user_id": user["id"]},
+            )
+    
     except IntegrityError:
         raise HTTPException(status_code=409, detail="Utente già esistente")
     except Exception as e:
