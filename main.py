@@ -368,23 +368,41 @@ def add_purchased_credits_to_remaining(
     plan_name: str,
     purchased_credits: int,
     subscription,
+    user_id: Optional[str] = None,
 ):
     period_start, period_end = get_subscription_period(subscription)
 
     with engine.begin() as conn:
-        row = conn.execute(
-            text("""
-                SELECT user_id, usage_limit, usage_count
-                FROM subscriptions
-                WHERE stripe_customer_id = :stripe_customer_id
-                   OR stripe_subscription_id = :stripe_subscription_id
-                FOR UPDATE
-            """),
-            {
-                "stripe_customer_id": customer_id,
-                "stripe_subscription_id": subscription_id,
-            },
-        ).mappings().first()
+        if user_id:
+            row = conn.execute(
+                text("""
+                    SELECT user_id, usage_limit, usage_count
+                    FROM subscriptions
+                    WHERE user_id = :user_id
+                       OR stripe_customer_id = :stripe_customer_id
+                       OR stripe_subscription_id = :stripe_subscription_id
+                    FOR UPDATE
+                """),
+                {
+                    "user_id": user_id,
+                    "stripe_customer_id": customer_id,
+                    "stripe_subscription_id": subscription_id,
+                },
+            ).mappings().first()
+        else:
+            row = conn.execute(
+                text("""
+                    SELECT user_id, usage_limit, usage_count
+                    FROM subscriptions
+                    WHERE stripe_customer_id = :stripe_customer_id
+                       OR stripe_subscription_id = :stripe_subscription_id
+                    FOR UPDATE
+                """),
+                {
+                    "stripe_customer_id": customer_id,
+                    "stripe_subscription_id": subscription_id,
+                },
+            ).mappings().first()
 
         if not row:
             return
@@ -1015,6 +1033,11 @@ def create_checkout_session(
                 "user_id": user["user_id"],
                 "plan": plan,
             },
+            subscription_data={
+                "metadata": {
+                    "user_id": user["user_id"]
+                }
+            },
         )
 
         return {
@@ -1168,13 +1191,18 @@ async def stripe_webhook(request: Request):
                 price_id = subscription["items"]["data"][0]["price"]["id"]
                 plan_name, purchased_credits = get_plan_config_from_price_id(price_id)
         
+                subscription_metadata = stripe_field(subscription, "metadata", {})
+                user_id = stripe_field(subscription_metadata, "user_id")
+        
                 add_purchased_credits_to_remaining(
                     customer_id=customer_id,
                     subscription_id=subscription_id,
                     plan_name=plan_name,
                     purchased_credits=purchased_credits,
                     subscription=subscription,
+                    user_id=user_id,
                 )
+                
         return {"received": True}
 
     except HTTPException:
