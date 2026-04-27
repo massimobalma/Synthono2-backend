@@ -1352,7 +1352,7 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=400, detail=f"Errore Stripe: {str(e)}")
     except Exception as e:
-        print ("ERRORE UPGRADE TO PRO:" repr(e))
+        print ("ERRORE UPGRADE TO PRO:", repr(e))
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
