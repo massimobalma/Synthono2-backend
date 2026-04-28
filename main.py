@@ -1378,12 +1378,10 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
 
         if not subscription_item_id:
             raise HTTPException(
-                status_code = 400,
+                status_code=400,
                 detail="Subscription item Stripe non valido"
             )
 
-        existing_metadata = stripe_field(subscription, "metadata", {}) or {}
-            
         updated_subscription = stripe.Subscription.modify(
             stripe_subscription_id,
             items=[
@@ -1396,7 +1394,6 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
             proration_behavior="always_invoice",
             payment_behavior="allow_incomplete",
             metadata={
-                **existing_metadata,
                 "user_id": user["user_id"],
                 "requested_by": "app_upgrade_to_pro"
             }
@@ -1414,7 +1411,7 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
     except stripe.error.StripeError as e:
         raise HTTPException(status_code=400, detail=f"Errore Stripe: {str(e)}")
     except Exception as e:
-        print ("ERRORE UPGRADE TO PRO:", repr(e))
+        print("ERRORE UPGRADE TO PRO:", repr(e))
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
