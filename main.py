@@ -373,6 +373,8 @@ def add_purchased_credits_to_remaining(
     period_start, period_end = get_subscription_period(subscription)
 
     with engine.begin() as conn:
+        print("CREDIT UPDATE INPUT:", user_id, customer_id, subscription_id, plan_name, purchased_credits)
+    
         if user_id:
             row = conn.execute(
                 text("""
@@ -403,16 +405,18 @@ def add_purchased_credits_to_remaining(
                     "stripe_subscription_id": subscription_id,
                 },
             ).mappings().first()
-
+    
+        print("CREDIT UPDATE ROW:", row)
+    
         if not row:
-            print("CREDIT UPDATE: nessuna subscription trovata", user_id, customer_id, subscription_id)
             return
-
+    
         current_limit = row["usage_limit"] or 0
         current_count = row["usage_count"] or 0
         remaining = max(current_limit - current_count, 0)
-
         new_usage_limit = remaining + purchased_credits
+    
+        print("CREDIT UPDATE CALC:", current_limit, current_count, remaining, new_usage_limit)
 
         conn.execute(
             text("""
