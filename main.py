@@ -405,6 +405,7 @@ def add_purchased_credits_to_remaining(
             ).mappings().first()
 
         if not row:
+            print("CREDIT UPDATE: nessuna subscription trovata", user_id, customer_id, subscription_id)
             return
 
         current_limit = row["usage_limit"] or 0
@@ -440,6 +441,8 @@ def add_purchased_credits_to_remaining(
                 "user_id": row["user_id"],
             },
         )
+
+        print("CREDIT UPDATE OK:", row["user_id"], plan_name, current_limit, current_count, remaining, purchased_credits, new_usage_limit)
 
 @app.get("/")
 def root():
@@ -1202,6 +1205,10 @@ async def stripe_webhook(request: Request):
                     subscription=subscription,
                     user_id=user_id,
                 )
+            print("INVOICE.PAID customer_id:", customer_id)
+            print("INVOICE.PAID subscription_id:", subscription_id)
+            print("INVOICE.PAID user_id metadata:", user_id)
+            
                 
         return {"received": True}
 
@@ -1323,6 +1330,8 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
                 status_code = 400,
                 detail="Subscription item Stripe non valido"
             )
+
+        existing_metadata = stripe_field(subscription, "metadata", {}) or {}
             
         updated_subscription = stripe.Subscription.modify(
             stripe_subscription_id,
@@ -1336,6 +1345,8 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
             proration_behavior="always_invoice",
             payment_behavior="allow_incomplete",
             metadata={
+                **existing_metadata,
+                "user_id": user["user_id"],
                 "requested_by": "app_upgrade_to_pro"
             }
         )
