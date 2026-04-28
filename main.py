@@ -1191,11 +1191,21 @@ async def stripe_webhook(request: Request):
         
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
+        
                 price_id = subscription["items"]["data"][0]["price"]["id"]
                 plan_name, purchased_credits = get_plan_config_from_price_id(price_id)
         
-                subscription_metadata = stripe_field(subscription, "metadata", {})
-                user_id = stripe_field(subscription_metadata, "user_id")
+                subscription_metadata = stripe_field(subscription, "metadata", {}) or {}
+                invoice_metadata = stripe_field(obj, "metadata", {}) or {}
+        
+                user_id = (
+                    stripe_field(subscription_metadata, "user_id")
+                    or stripe_field(invoice_metadata, "user_id")
+                )
+        
+                print("INVOICE.PAID customer_id:", customer_id)
+                print("INVOICE.PAID subscription_id:", subscription_id)
+                print("INVOICE.PAID user_id:", user_id)
         
                 add_purchased_credits_to_remaining(
                     customer_id=customer_id,
@@ -1205,11 +1215,6 @@ async def stripe_webhook(request: Request):
                     subscription=subscription,
                     user_id=user_id,
                 )
-            print("INVOICE.PAID customer_id:", customer_id)
-            print("INVOICE.PAID subscription_id:", subscription_id)
-            print("INVOICE.PAID user_id metadata:", user_id)
-            
-                
         return {"received": True}
 
     except HTTPException:
