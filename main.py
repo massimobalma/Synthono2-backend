@@ -328,6 +328,43 @@ def stripe_field(obj, key, default=None):
     except Exception:
         return default
 
+def get_invoice_subscription_id(invoice_obj):
+    subscription_id = stripe_field(invoice_obj, "subscription")
+    if subscription_id:
+        return subscription_id
+
+    lines = stripe_field(invoice_obj, "lines", {}) or {}
+    data = stripe_field(lines, "data", []) or []
+
+    if data:
+        first_line = data[0]
+        parent = stripe_field(first_line, "parent", {}) or {}
+        subscription_details = stripe_field(parent, "subscription_item_details", {}) or {}
+        subscription_id = stripe_field(subscription_details, "subscription")
+        if subscription_id:
+            return subscription_id
+
+    return None
+
+
+def get_invoice_user_id(invoice_obj):
+    invoice_metadata = stripe_field(invoice_obj, "metadata", {}) or {}
+    user_id = stripe_field(invoice_metadata, "user_id")
+    if user_id:
+        return user_id
+
+    lines = stripe_field(invoice_obj, "lines", {}) or {}
+    data = stripe_field(lines, "data", []) or []
+
+    if data:
+        first_line = data[0]
+        line_metadata = stripe_field(first_line, "metadata", {}) or {}
+        user_id = stripe_field(line_metadata, "user_id")
+        if user_id:
+            return user_id
+
+    return None
+
 def is_subscription_canceling_at_period_end(subscription) -> bool:
     cancel_at_period_end = stripe_field(subscription, "cancel_at_period_end", False)
     cancel_at = stripe_field(subscription, "cancel_at")
@@ -1193,31 +1230,26 @@ async def stripe_webhook(request: Request):
 
         elif event_type == "invoice.paid":
             print("ENTERED invoice.paid", flush=True)
-            
+        
             customer_id = stripe_field(obj, "customer")
-            subscription_id = stripe_field(obj, "subscription")
-
+            subscription_id = get_invoice_subscription_id(obj)
+            invoice_user_id = get_invoice_user_id(obj)
+        
             print("INVOICE.PAID customer_id:", customer_id, flush=True)
             print("INVOICE.PAID subscription_id:", subscription_id, flush=True)
+            print("INVOICE.PAID invoice_user_id:", invoice_user_id, flush=True)
         
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
-        
                 price_id = subscription["items"]["data"][0]["price"]["id"]
                 plan_name, purchased_credits = get_plan_config_from_price_id(price_id)
         
                 subscription_metadata = stripe_field(subscription, "metadata", {}) or {}
-                invoice_metadata = stripe_field(obj, "metadata", {}) or {}
+                user_id = stripe_field(subscription_metadata, "user_id") or invoice_user_id
         
-                user_id = (
-                    stripe_field(subscription_metadata, "user_id")
-                    or stripe_field(invoice_metadata, "user_id")
-                )
-        
-                print("INVOICE.PAID user_id:", user_id, flush=True)
+                print("INVOICE.PAID final user_id:", user_id, flush=True)
                 print("INVOICE.PAID plan_name:", plan_name, flush=True)
                 print("INVOICE.PAID purchased_credits:", purchased_credits, flush=True)
-                
         
                 add_purchased_credits_to_remaining(
                     customer_id=customer_id,
@@ -1227,6 +1259,8 @@ async def stripe_webhook(request: Request):
                     subscription=subscription,
                     user_id=user_id,
                 )
+            else:
+                print("INVOICE.PAID skipped: missing customer_id or subscription_id", flush=True)
         return {"received": True}
 
     except HTTPException:
