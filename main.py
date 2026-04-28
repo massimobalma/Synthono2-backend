@@ -1109,6 +1109,8 @@ async def stripe_webhook(request: Request):
                             SET plan_name = :plan_name,
                                 subscription_status = :subscription_status,
                                 cancel_at_period_end = :cancel_at_period_end,
+                                usage_limit = :usage_limit,
+                                usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
                                 stripe_subscription_id = :stripe_subscription_id,
                                 current_period_start = :current_period_start,
@@ -1190,8 +1192,13 @@ async def stripe_webhook(request: Request):
                 )
 
         elif event_type == "invoice.paid":
+            print("ENTERED invoice.paid", flush=True)
+            
             customer_id = stripe_field(obj, "customer")
             subscription_id = stripe_field(obj, "subscription")
+
+            print("INVOICE.PAID customer_id:", customer_id, flush=True)
+            print("INVOICE.PAID subscription_id:", subscription_id, flush=True)
         
             if customer_id and subscription_id:
                 subscription = stripe.Subscription.retrieve(subscription_id)
@@ -1207,9 +1214,10 @@ async def stripe_webhook(request: Request):
                     or stripe_field(invoice_metadata, "user_id")
                 )
         
-                print("INVOICE.PAID customer_id:", customer_id)
-                print("INVOICE.PAID subscription_id:", subscription_id)
-                print("INVOICE.PAID user_id:", user_id)
+                print("INVOICE.PAID user_id:", user_id, flush=True)
+                print("INVOICE.PAID plan_name:", plan_name, flush=True)
+                print("INVOICE.PAID purchased_credits:", purchased_credits, flush=True)
+                
         
                 add_purchased_credits_to_remaining(
                     customer_id=customer_id,
