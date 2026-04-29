@@ -1137,7 +1137,7 @@ async def stripe_webhook(request: Request):
                 period_start, period_end = get_subscription_period(subscription)
 
                 price_id = subscription["items"]["data"][0]["price"]["id"]
-                plan_name, usage_limit = get_plan_config_from_price_id(price_id)
+                plan_name, _ = get_plan_config_from_price_id(price_id)
 
                 with engine.begin() as conn:
                     conn.execute(
@@ -1146,8 +1146,6 @@ async def stripe_webhook(request: Request):
                             SET plan_name = :plan_name,
                                 subscription_status = :subscription_status,
                                 cancel_at_period_end = :cancel_at_period_end,
-                                usage_limit = :usage_limit,
-                                usage_count = 0,
                                 stripe_customer_id = :stripe_customer_id,
                                 stripe_subscription_id = :stripe_subscription_id,
                                 current_period_start = :current_period_start,
@@ -1159,7 +1157,6 @@ async def stripe_webhook(request: Request):
                             "plan_name": plan_name,
                             "subscription_status": stripe_field(subscription, "status", "unknown"),
                             "cancel_at_period_end": is_subscription_canceling_at_period_end(subscription),
-                            "usage_limit": usage_limit,
                             "stripe_customer_id": customer_id,
                             "stripe_subscription_id": subscription_id,
                             "current_period_start": ts_to_datetime(period_start),
