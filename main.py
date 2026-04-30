@@ -1256,6 +1256,16 @@ async def stripe_webhook(request: Request):
                     subscription=subscription,
                     user_id=user_id,
                 )
+                
+            elif event_type == "invoice.payment_failed":
+                print("ENTERED invoice.payment_failed", flush=True)
+            
+                customer_id = stripe_field(obj, "customer")
+                subscription_id = get_invoice_subscription_id(obj)
+            
+                print("PAYMENT FAILED customer_id:", customer_id, flush=True)
+                print("PAYMENT FAILED subscription_id:", subscription_id, flush=True)
+                
             else:
                 print("INVOICE.PAID skipped: missing customer_id or subscription_id", flush=True)
         return {"received": True}
