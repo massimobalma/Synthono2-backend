@@ -1569,7 +1569,7 @@ async def chat(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
-   user_message = query.strip()
+    user_message = query.strip()
 
     if not user_message and not attachment:
         raise HTTPException(status_code=400, detail="Messaggio vuoto")
