@@ -1569,9 +1569,25 @@ async def chat(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
-    user_message = query.strip()
-    if not user_message:
+   user_message = query.strip()
+
+    if not user_message and not attachment:
         raise HTTPException(status_code=400, detail="Messaggio vuoto")
+
+    dify_user_id = f"user-{user['user_id']}"
+    dify_files = []
+    attachment_label = ""
+
+    if attachment and attachment.filename:
+        uploaded_file = await upload_file_to_dify(attachment, dify_user_id)
+
+        dify_files.append({
+            "type": get_dify_file_type(attachment.content_type, attachment.filename),
+            "transfer_method": "local_file",
+            "upload_file_id": uploaded_file["id"],
+        })
+
+        attachment_label = f"\n\n[Allegato: {attachment.filename}]"
 
     try:
         with engine.begin() as conn:
@@ -1605,24 +1621,9 @@ async def chat(
         "Accept": "text/event-stream",
     }
 
-    dify_user_id = f"user-{user['user_id']}"
-dify_files = []
-attachment_label = ""
-
-if attachment and attachment.filename:
-    uploaded_file = await upload_file_to_dify(attachment, dify_user_id)
-
-    dify_files.append({
-        "type": get_dify_file_type(attachment.content_type, attachment.filename),
-        "transfer_method": "local_file",
-        "upload_file_id": uploaded_file["id"],
-    })
-
-    attachment_label = f"\n\n[Allegato: {attachment.filename}]"
-    
     payload = {
         "inputs": {},
-        "query": user_message,
+        "query": user_message or "Analizza il file allegato.",
         "response_mode": "streaming",
         "conversation_id": conversation["dify_conversation_id"] or "",
         "user": dify_user_id,
