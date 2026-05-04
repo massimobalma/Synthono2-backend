@@ -5,7 +5,7 @@ import stripe
 import traceback
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response, Cookie, Depends, Request, UploadFile, File, Form
@@ -1505,7 +1505,7 @@ async def chat(
     query: str = Form(...),
     conversation_id: str = Form(""),
     frontend_user: str = Form("frontend-user"),
-    attachment: Optional[UploadFile] = File(default=None),
+    attachments: Optional[List[UploadFile]] = File(default=None),
     user: dict = Depends(get_verified_user),
 ):
     if not DIFY_API_KEY:
@@ -1570,15 +1570,24 @@ async def chat(
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
     user_message = query.strip()
+    uploaded_attachments = [
+        file for file in (attachments or [])
+        if file and file.filename
+    ]
 
-    if not user_message and not attachment:
+    if not user_message and not uploaded_attachments:
         raise HTTPException(status_code=400, detail="Messaggio vuoto")
+    if len(uploaded_attachments)>5:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Puoi allegare al massimo 5 file per messaggio"
+            )
 
     dify_user_id = f"user-{user['user_id']}"
     dify_files = []
-    attachment_label = ""
+    attachment_names = []
 
-    if attachment and attachment.filename:
+    for attachment in uploaded_attachments:
         uploaded_file = await upload_file_to_dify(attachment, dify_user_id)
 
         dify_files.append({
@@ -1587,7 +1596,12 @@ async def chat(
             "upload_file_id": uploaded_file["id"],
         })
 
-        attachment_label = f"\n\n[Allegato: {attachment.filename}]"
+        attachment_names.append(attachment.filename)
+
+    attachment_label = ""
+
+    if attachment_names:
+        attachment_label = "\n\n[Allegati: " + ", ".join(attachment_names) + "]"
 
     try:
         with engine.begin() as conn:
