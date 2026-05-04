@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Response, Cookie, Depends, Request
+from fastapi import FastAPI, HTTPException, Response, Cookie, Depends, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
@@ -327,6 +327,84 @@ def stripe_field(obj, key, default=None):
         return obj[key] if key in obj else getattr(obj, key, default)
     except Exception:
         return default
+
+MAX_CHAT_UPLOAD_SIZE = int(os.getenv("MAX_CHAT_UPLOAD_SIZE", str(15 * 1024 * 1024)))
+
+
+def get_dify_file_type(content_type: Optional[str], filename: str) -> str:
+    mime = (content_type or "").lower()
+    name = (filename or "").lower()
+
+    if mime.startswith("image/"):
+        return "image"
+
+    if mime.startswith("audio/"):
+        return "audio"
+
+    if mime.startswith("video/"):
+        return "video"
+
+    return "document"
+
+
+async def upload_file_to_dify(upload: UploadFile, dify_user_id: str) -> dict:
+    if not DIFY_API_KEY:
+        raise HTTPException(status_code=500, detail="DIFY_API_KEY non configurata")
+
+    file_bytes = await upload.read()
+
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Il file allegato è vuoto")
+
+    if len(file_bytes) > MAX_CHAT_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail="Il file allegato è troppo grande"
+        )
+
+    filename = upload.filename or "allegato"
+    content_type = upload.content_type or "application/octet-stream"
+
+    headers = {
+        "Authorization": f"Bearer {DIFY_API_KEY}",
+    }
+
+    files = {
+        "file": (filename, file_bytes, content_type)
+    }
+
+    data = {
+        "user": dify_user_id
+    }
+
+    try:
+        timeout = httpx.Timeout(connect=20.0, read=180.0, write=60.0, pool=30.0)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            res = await client.post(
+                f"{DIFY_BASE_URL}/files/upload",
+                headers=headers,
+                data=data,
+                files=files,
+            )
+
+        res.raise_for_status()
+        return res.json()
+
+    except httpx.HTTPStatusError as e:
+        print("DIFY FILE UPLOAD STATUS ERROR:", e.response.status_code, e.response.text)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Errore upload file verso Dify: {e.response.status_code}"
+        )
+
+    except Exception as e:
+        print("ERRORE UPLOAD FILE DIFY:", repr(e))
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail="Errore durante il caricamento del file verso Dify"
+        )
 
 def get_invoice_subscription_id(invoice_obj):
     subscription_id = stripe_field(invoice_obj, "subscription")
@@ -1423,7 +1501,13 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
 @app.post("/chat")
-async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
+async def chat(
+    query: str = Form(...),
+    conversation_id: str = Form(""),
+    frontend_user: str = Form("frontend-user"),
+    attachment: Optional[UploadFile] = File(default=None),
+    user: dict = Depends(get_verified_user),
+):
     if not DIFY_API_KEY:
         raise HTTPException(status_code=500, detail="DIFY_API_KEY non configurata")
 
@@ -1456,7 +1540,7 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore controllo utilizzi: {str(e)}")
 
-    local_conversation_id = (request.conversation_id or "").strip()
+    local_conversation_id = (conversation_id or "").strip()
     if not local_conversation_id:
         raise HTTPException(status_code=400, detail="conversation_id mancante")
 
@@ -1485,7 +1569,7 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
-    user_message = request.query.strip()
+    user_message = query.strip()
     if not user_message:
         raise HTTPException(status_code=400, detail="Messaggio vuoto")
 
@@ -1498,7 +1582,7 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
                 """),
                 {
                     "conversation_id": local_conversation_id,
-                    "content": user_message,
+                    "content": user_message + attachment_label,
                 },
             )
 
@@ -1521,12 +1605,28 @@ async def chat(request: ChatRequest, user: dict = Depends(get_verified_user)):
         "Accept": "text/event-stream",
     }
 
+    dify_user_id = f"user-{user['user_id']}"
+dify_files = []
+attachment_label = ""
+
+if attachment and attachment.filename:
+    uploaded_file = await upload_file_to_dify(attachment, dify_user_id)
+
+    dify_files.append({
+        "type": get_dify_file_type(attachment.content_type, attachment.filename),
+        "transfer_method": "local_file",
+        "upload_file_id": uploaded_file["id"],
+    })
+
+    attachment_label = f"\n\n[Allegato: {attachment.filename}]"
+    
     payload = {
         "inputs": {},
         "query": user_message,
         "response_mode": "streaming",
         "conversation_id": conversation["dify_conversation_id"] or "",
-        "user": f"user-{user['user_id']}"
+        "user": dify_user_id,
+        "files": dify_files,
     }
 
     timeout = httpx.Timeout(connect=20.0, read=180.0, write=30.0, pool=30.0)
