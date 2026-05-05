@@ -63,7 +63,7 @@ password_hash = PasswordHash.recommended()
 serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-auth")
 
 SESSION_COOKIE_NAME = "ethi_session"
-SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7  # 7 giorni
+SESSION_MAX_AGE_SECONDS = 60 * 60 * 2  # 2 ore di sessione. Dopo Timeout Sessione Scaduta
 
 
 class ChatRequest(BaseModel):
@@ -123,7 +123,23 @@ def create_session_token(user_id: str, email: str) -> str:
 
 
 def decode_session_token(token: str) -> dict:
-    return serializer.loads(token)
+    data = serializer.loads(token)
+
+    issued_at_raw = data.get("issued_at")
+    if not issued_at_raw:
+        raise BadSignature("Sessione senza data di emissione")
+
+    issued_at = datetime.fromisoformat(issued_at_raw)
+
+    if issued_at.tzinfo is None:
+        issued_at = issued_at.replace(tzinfo=timezone.utc)
+
+    expires_at = issued_at + timedelta(seconds=SESSION_MAX_AGE_SECONDS)
+
+    if datetime.now(timezone.utc) > expires_at:
+        raise BadSignature("Sessione scaduta")
+
+    return data
 
 def create_reset_token(email: str) -> str:
     payload = {
@@ -275,7 +291,7 @@ def get_current_user(ethi_session: Optional[str] = Cookie(default=None)) -> dict
         data = decode_session_token(ethi_session)
         return data
     except BadSignature:
-        raise HTTPException(status_code=401, detail="Sessione non valida")
+        raise HTTPException(status_code=401, detail="Sessione scaduta. Effettua nuovamente il login.")
 
 def get_verified_user(user: dict = Depends(get_current_user)) -> dict:
     try:
