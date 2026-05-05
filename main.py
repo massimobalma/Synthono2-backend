@@ -64,6 +64,8 @@ serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-auth")
 
 SESSION_COOKIE_NAME = "ethi_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 2  # 2 ore di sessione. Dopo Timeout Sessione Scaduta
+TERMS_VERSION = "Termini e Condizioni dUso Applicazione Ethidea Benessere Bioenergetico Conformi GDPR e Normative UE"
+PRIVACY_VERSION = "privacy_vs1" #sostituire 
 
 
 class ChatRequest(BaseModel):
@@ -75,6 +77,8 @@ class ChatRequest(BaseModel):
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
+    terms_accepted: bool = False
+    privacy_accepted: bool = False
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -594,16 +598,36 @@ def health_check():
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
 
 
+
+
 @app.post("/auth/signup")
-def signup(payload: SignupRequest, response: Response):
+def signup(payload: SignupRequest, response: Response, request: Request):
     email = payload.email.strip().lower()
     password = payload.password
 
+    if not payload.terms_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="Devi accettare i Termini e Condizioni d'uso"
+        )
+
+    if not payload.privacy_accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="Devi confermare di aver letto la Privacy Policy"
+        )
+
     if len(password) < 8:
-        raise HTTPException(status_code=400, detail="La password deve avere almeno 8 caratteri")
+        raise HTTPException(
+            status_code=400,
+            detail="La password deve avere almeno 8 caratteri"
+        )
 
     if len(password) > 200:
-        raise HTTPException(status_code=400, detail="La password è troppo lunga")
+        raise HTTPException(
+            status_code=400,
+            detail="La password è troppo lunga"
+        )
 
     password_hash = hash_password(password)
 
@@ -615,10 +639,14 @@ def signup(payload: SignupRequest, response: Response):
                     VALUES (:email, :password_hash)
                     RETURNING id, email, created_at
                 """),
-                {"email": email, "password_hash": password_hash},
+                {
+                    "email": email,
+                    "password_hash": password_hash,
+                },
             )
+
             user = result.mappings().first()
-    
+
             conn.execute(
                 text("""
                     INSERT INTO subscriptions (
@@ -640,11 +668,39 @@ def signup(payload: SignupRequest, response: Response):
                         NOW()
                     )
                 """),
-                {"user_id": user["id"]},
+                {
+                    "user_id": user["id"],
+                },
             )
-    
+
+            client_ip = request.client.host if request.client else None
+            user_agent = request.headers.get("user-agent")
+
+            conn.execute(
+                text("""
+                    INSERT INTO user_legal_acceptances (
+                        user_id,
+                        document_type,
+                        document_version,
+                        ip_address,
+                        user_agent
+                    )
+                    VALUES
+                        (:user_id, 'terms', :terms_version, :ip_address, :user_agent),
+                        (:user_id, 'privacy', :privacy_version, :ip_address, :user_agent)
+                """),
+                {
+                    "user_id": user["id"],
+                    "terms_version": TERMS_VERSION,
+                    "privacy_version": PRIVACY_VERSION,
+                    "ip_address": client_ip,
+                    "user_agent": user_agent,
+                },
+            )
+
     except IntegrityError:
         raise HTTPException(status_code=409, detail="Utente già esistente")
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore database: {str(e)}")
 
@@ -659,6 +715,7 @@ def signup(payload: SignupRequest, response: Response):
             "created_at": str(user["created_at"]),
         },
     }
+    
 
 
 @app.post("/auth/login")
