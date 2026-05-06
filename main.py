@@ -598,6 +598,91 @@ def health_check():
         raise HTTPException(status_code=500, detail=f"DB error: {str(e)}")
 
 
+@app.get("/legal/status")
+def legal_status(user: dict = Depends(get_verified_user)):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT document_type, document_version
+                    FROM user_legal_acceptances
+                    WHERE user_id = :user_id
+                      AND (
+                        (document_type = 'terms' AND document_version = :terms_version)
+                        OR
+                        (document_type = 'privacy' AND document_version = :privacy_version)
+                      )
+                """),
+                {
+                    "user_id": user["user_id"],
+                    "terms_version": TERMS_VERSION,
+                    "privacy_version": PRIVACY_VERSION,
+                },
+            )
+
+            rows = result.mappings().all()
+
+        accepted_docs = {
+            row["document_type"]: row["document_version"]
+            for row in rows
+        }
+
+        terms_ok = accepted_docs.get("terms") == TERMS_VERSION
+        privacy_ok = accepted_docs.get("privacy") == PRIVACY_VERSION
+
+        return {
+            "terms_version": TERMS_VERSION,
+            "privacy_version": PRIVACY_VERSION,
+            "terms_accepted": terms_ok,
+            "privacy_accepted": privacy_ok,
+            "requires_acceptance": not (terms_ok and privacy_ok),
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore controllo documenti legali: {str(e)}")
+
+
+
+@app.post("/legal/accept")
+def accept_legal_documents(
+    request: Request,
+    user: dict = Depends(get_verified_user)
+):
+    try:
+        client_ip = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO user_legal_acceptances (
+                        user_id,
+                        document_type,
+                        document_version,
+                        ip_address,
+                        user_agent
+                    )
+                    VALUES
+                        (:user_id, 'terms', :terms_version, :ip_address, :user_agent),
+                        (:user_id, 'privacy', :privacy_version, :ip_address, :user_agent)
+                """),
+                {
+                    "user_id": user["user_id"],
+                    "terms_version": TERMS_VERSION,
+                    "privacy_version": PRIVACY_VERSION,
+                    "ip_address": client_ip,
+                    "user_agent": user_agent,
+                },
+            )
+
+        return {
+            "message": "Documenti legali accettati",
+            "terms_version": TERMS_VERSION,
+            "privacy_version": PRIVACY_VERSION,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore salvataggio accettazione: {str(e)}")
 
 
 @app.post("/auth/signup")
