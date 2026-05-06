@@ -64,7 +64,7 @@ serializer = URLSafeSerializer(SESSION_SECRET, salt="ethi-auth")
 
 SESSION_COOKIE_NAME = "ethi_session"
 SESSION_MAX_AGE_SECONDS = 60 * 60 * 2  # 2 ore di sessione. Dopo Timeout Sessione Scaduta
-TERMS_VERSION = "Termini e Condizioni dUso Applicazione Ethidea Benessere Bioenergetico Conformi GDPR e Normative UE2"
+TERMS_VERSION = "Termini e Condizioni dUso Applicazione Ethidea Benessere Bioenergetico Conformi GDPR e Normative UE"
 PRIVACY_VERSION = "privacy_vs1" #sostituire 
 
 
