@@ -603,7 +603,7 @@ def add_purchased_credits_to_remaining(
 
         print("CREDIT UPDATE OK:", row["user_id"], plan_name, current_limit, current_count, remaining, purchased_credits, new_usage_limit)
 
-def get_or_create_stripe_customer_for_user(user_id: str) -> str:
+def get_or_create_stripe_customer_for_user(user_id: str, preferred_stripe_customer_id: Optional[str] = None) -> str:
     with engine.begin() as conn:
         result = conn.execute(
             text("""
@@ -670,7 +670,7 @@ def get_or_create_stripe_customer_for_user(user_id: str) -> str:
             "metadata": metadata,
         }
 
-        stripe_customer_id = profile["stripe_customer_id"]
+        stripe_customer_id = preferred_stripe_customer_id or profile["stripe_customer_id"]
 
         if stripe_customer_id:
             stripe.Customer.modify(
@@ -1852,7 +1852,13 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
 
         plan_name = (row["plan_name"] or "free").lower()
         stripe_subscription_id = row["stripe_subscription_id"]
+        stripe_customer_id = row["stripe_customer_id"]
         cancel_at_period_end = bool(row["cancel_at_period_end"]) if row["cancel_at_period_end"] is not None else False
+        
+        get_or_create_stripe_customer_for_user(
+            user_id=user["user_id"],
+            preferred_stripe_customer_id=stripe_customer_id
+        )
 
         if plan_name == "pro":
             return {"ok": True, "message": "Sei già sul piano Pro"}
