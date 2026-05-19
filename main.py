@@ -1545,6 +1545,7 @@ def create_checkout_session(
 
     try:
         stripe_customer_id = get_or_create_stripe_customer_for_user(user["user_id"])
+
         session = stripe.checkout.Session.create(
             mode="subscription",
             customer=stripe_customer_id,
@@ -1580,8 +1581,20 @@ def create_checkout_session(
             "checkout_url": session.url
         }
 
+    except HTTPException:
+        raise
+
+    except stripe.error.StripeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Errore Stripe: {str(e)}"
+        )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore creazione checkout Stripe: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore creazione checkout Stripe: {str(e)}"
+        )
 
 @app.post("/billing/webhook")
 async def stripe_webhook(request: Request):
