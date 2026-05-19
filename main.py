@@ -695,19 +695,22 @@ def get_or_create_stripe_customer_for_user(user_id: str, preferred_stripe_custom
             )
 
         if customer_type == "company" and profile["vat_number"]:
-            existing_tax_ids = stripe.Customer.list_tax_ids(stripe_customer_id)
-
+            existing_tax_ids = stripe.Customer.list_tax_ids(
+                stripe_customer_id,
+                limit=100
+            )
+            
             vat_number = profile["vat_number"].strip().upper()
             if vat_number.startswith("IT"):
                 vat_number = vat_number[2:]
-
+            
             wanted_value = f"IT{vat_number}"
-
+            
             already_exists = any(
-                tax_id.get("value", "").upper() == wanted_value
-                for tax_id in existing_tax_ids.get("data", [])
+                (stripe_field(tax_id, "value", "") or "").upper() == wanted_value
+                for tax_id in stripe_field(existing_tax_ids, "data", []) or []
             )
-
+            
             if not already_exists:
                 stripe.Customer.create_tax_id(
                     stripe_customer_id,
