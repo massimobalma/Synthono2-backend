@@ -104,27 +104,6 @@ class CreateConversationRequest (BaseModel):
 class CreateCheckoutSessionRequest (BaseModel):
     plan: str
 
-class BillingProfileRequest(BaseModel):
-    customer_type: str
-
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    company_name: Optional[str] = None
-
-    email: EmailStr
-    tax_code: Optional[str] = None
-    vat_number: Optional[str] = None
-
-    recipient_code: Optional[str] = None
-    pec: Optional[str] = None
-
-    address_line: str
-    zip_code: str
-    city: str
-    province: str
-    country: str = "IT"
-    
-
 def build_frontend_url(path: str) -> str:
     return f"{FRONTEND_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
 
@@ -603,120 +582,46 @@ def add_purchased_credits_to_remaining(
 
         print("CREDIT UPDATE OK:", row["user_id"], plan_name, current_limit, current_count, remaining, purchased_credits, new_usage_limit)
 
-def get_or_create_stripe_customer_for_user(user_id: str, preferred_stripe_customer_id: Optional[str] = None) -> str:
+def get_or_create_stripe_customer_for_user(
+    user_id: str,
+    email: str,
+    preferred_stripe_customer_id: Optional[str] = None,
+) -> str:
+    """
+    Crea/recupera Customer Stripe usando solo email e user_id.
+    I dati fiscali (nome, indirizzo, CF/P.IVA) verranno raccolti da Stripe Checkout
+    e letti direttamente da FattureExpress.
+    """
     with engine.begin() as conn:
         result = conn.execute(
-            text("""
-                SELECT
-                    customer_type,
-                    first_name,
-                    last_name,
-                    company_name,
-                    email,
-                    tax_code,
-                    vat_number,
-                    recipient_code,
-                    pec,
-                    address_line,
-                    zip_code,
-                    city,
-                    province,
-                    country,
-                    stripe_customer_id,
-                    is_complete
-                FROM billing_profiles
-                WHERE user_id = :user_id
-            """),
+            text("SELECT stripe_customer_id FROM billing_profiles WHERE user_id = :user_id"),
             {"user_id": user_id},
         )
-
-        profile = result.mappings().first()
-
-        if not profile or not profile["is_complete"]:
-            raise HTTPException(
-                status_code=400,
-                detail="Completa prima i dati fiscali"
-            )
-
-        customer_type = profile["customer_type"]
-
-        if customer_type == "private":
-            customer_name = f"{profile['first_name']} {profile['last_name']}".strip()
-        else:
-            customer_name = profile["company_name"]
-
-        metadata = {
-            "user_id": user_id,
-            "customer_type": customer_type,
-            "codice_destinatario": profile["recipient_code"] or "0000000",
-        }
-
-        if profile["tax_code"]:
-            metadata["fiscal_code"] = profile["tax_code"].strip().upper()
-
-        if profile["pec"]:
-            metadata["pec"] = profile["pec"].strip().lower()
-
-        customer_payload = {
-            "email": profile["email"],
-            "name": customer_name,
-            "address": {
-                "line1": profile["address_line"],
-                "postal_code": profile["zip_code"],
-                "city": profile["city"],
-                "state": profile["province"],
-                "country": profile["country"] or "IT",
-            },
-            "metadata": metadata,
-        }
-
-        stripe_customer_id = preferred_stripe_customer_id or profile["stripe_customer_id"]
+        row = result.mappings().first()
+        stripe_customer_id = preferred_stripe_customer_id or (row["stripe_customer_id"] if row else None)
 
         if stripe_customer_id:
             stripe.Customer.modify(
                 stripe_customer_id,
-                **customer_payload
+                email=email,
+                metadata={"user_id": user_id},
             )
         else:
-            customer = stripe.Customer.create(**customer_payload)
+            customer = stripe.Customer.create(
+                email=email,
+                metadata={"user_id": user_id},
+            )
             stripe_customer_id = customer["id"]
 
             conn.execute(
                 text("""
-                    UPDATE billing_profiles
-                    SET stripe_customer_id = :stripe_customer_id,
-                        updated_at = NOW()
-                    WHERE user_id = :user_id
+                    INSERT INTO billing_profiles (user_id, stripe_customer_id, is_complete, updated_at)
+                    VALUES (:user_id, :stripe_customer_id, FALSE, NOW())
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET stripe_customer_id = EXCLUDED.stripe_customer_id, updated_at = NOW()
                 """),
-                {
-                    "stripe_customer_id": stripe_customer_id,
-                    "user_id": user_id,
-                },
+                {"user_id": user_id, "stripe_customer_id": stripe_customer_id},
             )
-
-        if customer_type == "company" and profile["vat_number"]:
-            existing_tax_ids = stripe.Customer.list_tax_ids(
-                stripe_customer_id,
-                limit=100
-            )
-            
-            vat_number = profile["vat_number"].strip().upper()
-            if vat_number.startswith("IT"):
-                vat_number = vat_number[2:]
-            
-            wanted_value = f"IT{vat_number}"
-            
-            already_exists = any(
-                (stripe_field(tax_id, "value", "") or "").upper() == wanted_value
-                for tax_id in stripe_field(existing_tax_ids, "data", []) or []
-            )
-            
-            if not already_exists:
-                stripe.Customer.create_tax_id(
-                    stripe_customer_id,
-                    type="eu_vat",
-                    value=wanted_value,
-                )
 
         return stripe_customer_id
         
@@ -1415,117 +1320,6 @@ def get_conversation_messages(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore interno: {str(e)}")
 
-
-@app.post("/billing/profile")
-def save_billing_profile(
-    payload: BillingProfileRequest,
-    user: dict = Depends(get_verified_user)
-):
-    customer_type = payload.customer_type.strip().lower()
-
-    if customer_type not in ("private", "company"):
-        raise HTTPException(status_code=400, detail="Tipo cliente non valido")
-
-    if customer_type == "private":
-        if not payload.first_name or not payload.last_name or not payload.tax_code:
-            raise HTTPException(
-                status_code=400,
-                detail="Per cliente privato servono nome, cognome e codice fiscale"
-            )
-
-    if customer_type == "company":
-        if not payload.company_name or not payload.vat_number:
-            raise HTTPException(
-                status_code=400,
-                detail="Per azienda/professionista servono ragione sociale e partita IVA"
-            )
-
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO billing_profiles (
-                        user_id,
-                        customer_type,
-                        first_name,
-                        last_name,
-                        company_name,
-                        email,
-                        tax_code,
-                        vat_number,
-                        recipient_code,
-                        pec,
-                        address_line,
-                        zip_code,
-                        city,
-                        province,
-                        country,
-                        is_complete,
-                        updated_at
-                    )
-                    VALUES (
-                        :user_id,
-                        :customer_type,
-                        :first_name,
-                        :last_name,
-                        :company_name,
-                        :email,
-                        :tax_code,
-                        :vat_number,
-                        :recipient_code,
-                        :pec,
-                        :address_line,
-                        :zip_code,
-                        :city,
-                        :province,
-                        :country,
-                        TRUE,
-                        NOW()
-                    )
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET
-                        customer_type = EXCLUDED.customer_type,
-                        first_name = EXCLUDED.first_name,
-                        last_name = EXCLUDED.last_name,
-                        company_name = EXCLUDED.company_name,
-                        email = EXCLUDED.email,
-                        tax_code = EXCLUDED.tax_code,
-                        vat_number = EXCLUDED.vat_number,
-                        recipient_code = EXCLUDED.recipient_code,
-                        pec = EXCLUDED.pec,
-                        address_line = EXCLUDED.address_line,
-                        zip_code = EXCLUDED.zip_code,
-                        city = EXCLUDED.city,
-                        province = EXCLUDED.province,
-                        country = EXCLUDED.country,
-                        is_complete = TRUE,
-                        updated_at = NOW()
-                """),
-                {
-                    "user_id": user["user_id"],
-                    "customer_type": customer_type,
-                    "first_name": payload.first_name,
-                    "last_name": payload.last_name,
-                    "company_name": payload.company_name,
-                    "email": payload.email,
-                    "tax_code": payload.tax_code,
-                    "vat_number": payload.vat_number,
-                    "recipient_code": payload.recipient_code,
-                    "pec": payload.pec,
-                    "address_line": payload.address_line,
-                    "zip_code": payload.zip_code,
-                    "city": payload.city,
-                    "province": payload.province,
-                    "country": payload.country,
-                },
-            )
-
-        return {"message": "Dati fiscali salvati"}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Errore salvataggio dati fiscali: {str(e)}")
-        
-
 @app.post("/billing/create-checkout-session")
 def create_checkout_session(
     payload: CreateCheckoutSessionRequest,
@@ -1547,7 +1341,7 @@ def create_checkout_session(
         raise HTTPException(status_code=400, detail="Piano non valido")
 
     try:
-        stripe_customer_id = get_or_create_stripe_customer_for_user(user["user_id"])
+        stripe_customer_id = get_or_create_stripe_customer_for_user(user_id=user["user_id"],email=user["email"],)
 
         session = stripe.checkout.Session.create(
             mode="subscription",
@@ -1860,7 +1654,8 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
         
         get_or_create_stripe_customer_for_user(
             user_id=user["user_id"],
-            preferred_stripe_customer_id=stripe_customer_id
+            email=user["email"],
+            preferred_stripe_customer_id=stripe_customer_id,
         )
 
         if plan_name == "pro":
