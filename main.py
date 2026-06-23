@@ -589,12 +589,12 @@ def get_or_create_stripe_customer_for_user(
 ) -> str:
     """
     Crea/recupera Customer Stripe usando solo email e user_id.
-    I dati fiscali (nome, indirizzo, CF/P.IVA) verranno raccolti da Stripe Checkout
-    e letti direttamente da FattureExpress.
+    I dati fiscali vengono raccolti da Stripe Checkout e letti da FattureExpress.
     """
     with engine.begin() as conn:
+        # Recupera stripe_customer_id dalla tabella subscriptions
         result = conn.execute(
-            text("SELECT stripe_customer_id FROM billing_profiles WHERE user_id = :user_id"),
+            text("SELECT stripe_customer_id FROM subscriptions WHERE user_id = :user_id"),
             {"user_id": user_id},
         )
         row = result.mappings().first()
@@ -613,12 +613,13 @@ def get_or_create_stripe_customer_for_user(
             )
             stripe_customer_id = customer["id"]
 
+            # Salva stripe_customer_id nella tabella subscriptions
             conn.execute(
                 text("""
-                    INSERT INTO billing_profiles (user_id, stripe_customer_id, is_complete, updated_at)
-                    VALUES (:user_id, :stripe_customer_id, FALSE, NOW())
-                    ON CONFLICT (user_id)
-                    DO UPDATE SET stripe_customer_id = EXCLUDED.stripe_customer_id, updated_at = NOW()
+                    UPDATE subscriptions
+                    SET stripe_customer_id = :stripe_customer_id,
+                        updated_at = NOW()
+                    WHERE user_id = :user_id
                 """),
                 {"user_id": user_id, "stripe_customer_id": stripe_customer_id},
             )
