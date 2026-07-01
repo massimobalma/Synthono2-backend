@@ -1357,6 +1357,18 @@ def create_checkout_session(
             tax_id_collection={
                 "enabled": True
             },
+             
+            custom_fields=[
+                {
+                    "key": "codice_fiscale_univoco",  # Deve essere minuscolo, senza spazi
+                    "label": {
+                        "type": "custom",
+                        "custom": "Codice Fiscale / Codice Univoco"
+                    },
+                    "type": "text",
+                    "optional": False, # Metti False se vuoi che sia obbligatorio
+                }
+            ],
             customer_update={
                 "address": "auto",
                 "name": "auto",
