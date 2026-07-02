@@ -625,7 +625,57 @@ def get_or_create_stripe_customer_for_user(
             )
 
         return stripe_customer_id
-        
+
+def send_payment_failed_email(to_email: str, plan_name: str, attempt_count: int) -> None:
+    if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD:
+        print("SMTP non configurato, skip email pagamento fallito")
+        return
+
+    subject = "Problema con il pagamento del tuo abbonamento SynthONO"
+
+    text_body = f"""
+Buongiorno,
+
+il pagamento del tuo abbonamento al piano {plan_name.upper()} non è andato a buon fine.
+
+Questo può succedere per diversi motivi:
+- fondi insufficienti sulla carta
+- dati della carta non più validi
+- blocco temporaneo da parte della banca
+
+Per evitare l'interruzione del servizio, ti chiediamo di:
+1. Accedere al tuo profilo su {APP_BASE_URL}/Test/account.html
+2. Aggiornare il metodo di pagamento tramite il Portale Stripe
+3. Oppure riprovare l'upgrade dalla pagina Piani
+
+Se il problema persiste, rispondi a questa email.
+
+Il team SynthONO
+""".strip()
+
+    html_body = f"""
+<p>Buongiorno,</p>
+<p>il pagamento del tuo abbonamento al piano <strong>{plan_name.upper()}</strong> non è andato a buon fine.</p>
+<p>Per evitare l'interruzione del servizio:</p>
+<ol>
+  <li>Accedi al tuo profilo su <a href="{APP_BASE_URL}/Test/account.html">{APP_BASE_URL}/Test/account.html</a></li>
+  <li>Aggiorna il metodo di pagamento tramite il Portale Stripe</li>
+  <li>Oppure riprova l'upgrade dalla pagina Piani</li>
+</ol>
+<p>Se il problema persiste, rispondi a questa email.</p>
+<p>Il team SynthONO</p>
+""".strip()
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = MAIL_FROM
+    msg["To"] = to_email
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(MAIL_FROM, [to_email], msg.as_string())
 
 @app.get("/")
 def root():
@@ -1482,12 +1532,27 @@ async def stripe_webhook(request: Request):
 
         elif event_type == "customer.subscription.updated":
             subscription = obj
+            status = stripe_field(subscription, "status", "unknown")
             customer_id = stripe_field(subscription, "customer")
             subscription_id = stripe_field(subscription, "id")
             price_id = subscription["items"]["data"][0]["price"]["id"]
             plan_name, usage_limit = get_plan_config_from_price_id(price_id)
             period_start, period_end = get_subscription_period(subscription)
 
+            # Se la subscription è in stato non attivo, NON aggiornare plan_name a quello nuovo
+            # ma mantieni lo stato coerente (rollback visivo)
+            effective_plan = plan_name
+            effective_status = status
+            if status in ("incomplete", "past_due", "unpaid"):
+                # Leggi il piano "reale" precedente dal DB per non illudere l'utente
+                with engine.connect() as conn:
+                    prev = conn.execute(
+                        text("SELECT plan_name FROM subscriptions WHERE stripe_subscription_id = :sid"),
+                        {"sid": subscription_id}
+                    ).mappings().first()
+                if prev and prev["plan_name"] in ("start", "free"):
+                    effective_plan = prev["plan_name"]   # resta sul piano che funzionava
+            
             with engine.begin() as conn:
                 conn.execute(
                     text("""
@@ -1572,17 +1637,102 @@ async def stripe_webhook(request: Request):
                     user_id=user_id,
                 )
                 
-            elif event_type == "invoice.payment_failed":
-                print("ENTERED invoice.payment_failed", flush=True)
+        elif event_type == "invoice.payment_failed":
+            print("ENTERED invoice.payment_failed", flush=True)
             
-                customer_id = stripe_field(obj, "customer")
-                subscription_id = get_invoice_subscription_id(obj)
+            customer_id = stripe_field(obj, "customer")
+            subscription_id = get_invoice_subscription_id(obj)
+            attempt_count = stripe_field(obj, "attempt_count", 0)
             
-                print("PAYMENT FAILED customer_id:", customer_id, flush=True)
-                print("PAYMENT FAILED subscription_id:", subscription_id, flush=True)
-                
-            else:
-                print("INVOICE.PAID skipped: missing customer_id or subscription_id", flush=True)
+            print("PAYMENT FAILED customer_id:", customer_id, flush=True)
+            print("PAYMENT FAILED subscription_id:", subscription_id, flush=True)
+
+            if subscription_id:
+                try:
+                    subscription = stripe.Subscription.retrieve(subscription_id)
+                except Exception:
+                    subscription = None
+            
+                # Se è l'invoice di un upgrade fallito, ripristina il piano precedente
+                with engine.begin() as conn:
+                    row = conn.execute(
+                        text("""
+                            SELECT user_id, plan_name FROM subscriptions
+                            WHERE stripe_subscription_id = :sid
+                        """),
+                        {"sid": subscription_id}
+                    ).mappings().first()
+            
+                    if row:
+                        user_id = row["user_id"]
+                        current_plan = row["plan_name"] or "free"
+        
+                        # Determina il piano "sicuro" a cui fare rollback
+                        # Se l'utente era su "start" e ha provato l'upgrade a "pro" fallito → torna a "start"
+                        # Se l'utente era già su "pro" con rinnovo fallito → resta su "pro" ma in past_due
+                        # Se era su "free" → resta su "free"
+                        if current_plan == "pro":
+                            # Controlla se è un upgrade fallito (periodo appena iniziato) o un rinnovo fallito
+                            # Euristica: se usage_count è basso e siamo all'inizio del periodo → upgrade fallito
+                            new_plan = "start"  # fallback sicuro per upgrade fallito
+                            new_usage_limit = 20
+                        elif current_plan == "start":
+                            new_plan = "start"
+                            new_usage_limit = 20
+                        else:
+                            new_plan = current_plan
+                            new_usage_limit = row["usage_limit"] or 2
+        
+                        # Determina lo status Stripe corretto
+                        stripe_status = "past_due"
+                        if subscription:
+                            sub_status = stripe_field(subscription, "status", "unknown")
+                            if sub_status == "incomplete":
+                                stripe_status = "incomplete"
+                            elif sub_status == "unpaid":
+                                stripe_status = "unpaid"
+        
+                        conn.execute(
+                            text("""
+                                UPDATE subscriptions
+                                SET plan_name = :plan_name,
+                                    subscription_status = :subscription_status,
+                                    usage_limit = :usage_limit,
+                                    updated_at = NOW()
+                                WHERE user_id = :user_id
+                            """),
+                            {
+                                "plan_name": new_plan,
+                                "subscription_status": stripe_status,
+                                "usage_limit": new_usage_limit,
+                                "user_id": user_id,
+                            }
+                        )
+        
+                        print(
+                            f"PAYMENT FAILED rollback: user={user_id} "
+                            f"plan {current_plan} -> {new_plan}, status={stripe_status}",
+                            flush=True
+                        )
+        
+                        # ⚠️ IMPORTANTE: invia email di notifica all'utente
+                        try:
+                            with engine.connect() as conn2:
+                                email_row = conn2.execute(
+                                    text("SELECT email FROM users WHERE id = :uid"),
+                                    {"uid": user_id}
+                                ).mappings().first()
+                                if email_row:
+                                    send_payment_failed_email(
+                                        to_email=email_row["email"],
+                                        plan_name=new_plan,
+                                        attempt_count=attempt_count,
+                                    )
+                        except Exception as e:
+                            print("PAYMENT FAILED email error:", repr(e), flush=True)
+        
+        else:
+            print(f"Unhandled event type: {event_type}", flush=True)
         return {"received": True}
 
     except HTTPException:
@@ -1721,12 +1871,30 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
                 }
             ],
             proration_behavior="always_invoice",
-            payment_behavior="allow_incomplete",
+            payment_behavior="error_if_incomplete",   # ← CAMBIATO
+            payment_settings={"payment_method_types": ["card"]},
+            expand=["latest_invoice.payment_intent"],
             metadata={
                 "user_id": user["user_id"],
                 "requested_by": "app_upgrade_to_pro"
             }
         )
+        
+        # Gestisci esplicitamente lo stato incomplete/past_due
+        status = updated_subscription.get("status")
+        if status in ("incomplete", "incomplete_expired"):
+            raise HTTPException(
+                status_code=402,
+                detail="Pagamento non autorizzato. Controlla i dati della carta o aggiungi un nuovo metodo di pagamento dal tuo profilo."
+            )
+        
+        latest_invoice = updated_subscription.get("latest_invoice") or {}
+        payment_intent = latest_invoice.get("payment_intent") or {}
+        if payment_intent.get("status") in ("requires_payment_method", "requires_action"):
+            raise HTTPException(
+                status_code=402,
+                detail="Il pagamento richiede un'azione aggiuntiva (es. 3D Secure) o un metodo valido."
+            )
 
         return {
             "ok": True,
