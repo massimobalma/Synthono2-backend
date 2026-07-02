@@ -1775,6 +1775,7 @@ def upgrade_to_pro(user: dict = Depends(get_verified_user)):
         
         get_or_create_stripe_customer_for_user(
             user_id=user["user_id"],
+            email=user["email"],
             preferred_stripe_customer_id=stripe_customer_id
         )
 
