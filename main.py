@@ -327,7 +327,7 @@ def get_verified_user(user: dict = Depends(get_current_user)) -> dict:
 
 def get_plan_config_from_price_id(price_id: str) -> tuple[str, int]:
     if price_id == STRIPE_START_PRICE_ID:
-        return "start", 20
+        return "start", 40
     if price_id == STRIPE_PRO_PRICE_ID:
         return "pro", 60
     return "free", 20
