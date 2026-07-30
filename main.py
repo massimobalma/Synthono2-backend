@@ -330,7 +330,7 @@ def get_plan_config_from_price_id(price_id: str) -> tuple[str, int]:
         return "start", 20
     if price_id == STRIPE_PRO_PRICE_ID:
         return "pro", 60
-    return "free", 2
+    return "free", 20
 
 def ts_to_datetime(ts):
     if not ts:
@@ -848,7 +848,7 @@ def signup(payload: SignupRequest, response: Response, request: Request):
                         :user_id,
                         'free',
                         'inactive',
-                        2,
+                        20,
                         0,
                         NOW(),
                         NOW()
@@ -1591,7 +1591,7 @@ async def stripe_webhook(request: Request):
                         SET plan_name = 'free',
                             subscription_status = 'canceled',
                             cancel_at_period_end = FALSE,
-                            usage_limit = 2,
+                            usage_limit = 20,
                             usage_count = 0,
                             current_period_start = NULL,
                             current_period_end = NULL,
@@ -1643,7 +1643,7 @@ async def stripe_webhook(request: Request):
                         # ✅ LOGICA SICURA: non declassare se è un rinnovo fallito
                         # Aggiorna solo lo stato a past_due/unpaid, mantieni il piano e i limiti
                         new_plan = current_plan
-                        new_usage_limit = row["usage_limit"] or 2
+                        new_usage_limit = row["usage_limit"] or 20
                         
                         # Recupera stato reale da Stripe se possibile
                         stripe_status = "past_due"
